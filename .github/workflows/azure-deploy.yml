@@ -28,7 +28,7 @@ jobs:
       run: |
         pip install --upgrade pip setuptools wheel
         pip install --no-cache-dir -r requirements.txt
-        pip install --no-cache-dir gunicorn  flask-socketio eventlet>=0.33.0
+        pip install --no-cache-dir gunicorn flask-socketio eventlet>=0.33.0
 
     - name: Build frontend
       run: |
