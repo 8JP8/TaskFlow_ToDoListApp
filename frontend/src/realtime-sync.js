@@ -32,7 +32,12 @@ class RealtimeSync {
       this.socket = io(socketUrl, {
         transports: ['websocket', 'polling'],
         autoConnect: true,
-        forceNew: true
+        forceNew: true,
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 10000,
+        timeout: 20000
       });
 
       this.storageId = storageId;
@@ -51,20 +56,45 @@ class RealtimeSync {
     this.socket.on('connect', () => {
       this.isConnected = true;
       this.callbacks.onConnectionChange?.(true);
-      console.log('Real-time sync connected');
-      console.log('Socket ID:', this.socket.id);
+      console.log('DEBUG: Real-time sync connected');
+      console.log('DEBUG: Socket ID:', this.socket.id);
+      console.log('DEBUG: Storage ID:', this.storageId);
       this.joinStorageRoom();
       this.startIdleDetection();
+      this.startPresenceHeartbeat();
     });
 
     this.socket.on('disconnect', () => {
       this.isConnected = false;
       this.callbacks.onConnectionChange?.(false);
-      console.log('Real-time sync disconnected');
+      console.log('DEBUG: Real-time sync disconnected');
+      this.stopPresenceHeartbeat();
+    });
+
+    // Reconnection lifecycle logging and state bridging
+    if (this.socket && this.socket.io) {
+      this.socket.io.on('reconnect_attempt', (attempt) => {
+        console.log('DEBUG: Reconnect attempt', attempt);
+      });
+      this.socket.io.on('reconnect', (attempt) => {
+        console.log('DEBUG: Reconnected after attempts:', attempt);
+        // Room rejoin happens on 'connect' listener
+      });
+      this.socket.io.on('reconnect_error', (err) => {
+        console.warn('DEBUG: Reconnect error:', err?.message || err);
+      });
+      this.socket.io.on('error', (err) => {
+        console.warn('DEBUG: Socket.IO error:', err?.message || err);
+      });
+    }
+
+    this.socket.on('connect_error', (err) => {
+      console.warn('DEBUG: Connect error:', err?.message || err);
+      this.callbacks.onConnectionChange?.(false);
     });
 
     this.socket.on('joined_storage', (data) => {
-      console.log('Joined storage room:', data.storage_id);
+      console.log('DEBUG: Joined storage room:', data.storage_id);
     });
 
     this.socket.on('task_created', (data) => {
@@ -78,14 +108,17 @@ class RealtimeSync {
     });
 
     this.socket.on('task_updated', (data) => {
-      console.log('Received task_updated event:', data);
+      console.log('DEBUG: Received task_updated event:', data);
+      console.log('DEBUG: Current storage ID:', this.storageId);
+      console.log('DEBUG: Event storage ID:', data.storage_id);
+      console.log('DEBUG: Update type:', data.update_type);
       if (data.storage_id === this.storageId) {
-        console.log('Processing task_updated for current storage');
-        console.log('Task data:', data.task);
-        console.log('Update type:', data.update_type);
+        console.log('DEBUG: Processing task_updated for current storage');
+        console.log('DEBUG: Task data:', data.task);
+        console.log('DEBUG: Calling onTaskUpdated callback');
         this.callbacks.onTaskUpdated?.(data);
       } else {
-        console.log('Ignoring task_updated for different storage:', data.storage_id);
+        console.log('DEBUG: Ignoring task_updated for different storage:', data.storage_id);
       }
     });
 
@@ -114,14 +147,20 @@ class RealtimeSync {
 
     // Add a catch-all event listener for debugging
     this.socket.onAny((eventName, ...args) => {
-      console.log('Received Socket.IO event:', eventName, args);
+      console.log('DEBUG: Received Socket.IO event:', eventName, args);
+      if (eventName === 'task_updated') {
+        console.log('DEBUG: task_updated event received with data:', args[0]);
+      }
     });
   }
 
   joinStorageRoom() {
     if (this.socket && this.storageId) {
-      console.log('Joining storage room:', this.storageId);
+      console.log('DEBUG: Joining storage room:', this.storageId);
       this.socket.emit('join_storage', { storage_id: this.storageId });
+      console.log('DEBUG: join_storage event emitted');
+    } else {
+      console.log('DEBUG: Cannot join storage room - socket:', !!this.socket, 'storageId:', this.storageId);
     }
   }
 
@@ -157,6 +196,29 @@ class RealtimeSync {
         this.updateActivity('idle');
       }
     }, 30000);
+  }
+
+  // Periodically emit presence so other clients don't consider us offline
+  startPresenceHeartbeat() {
+    if (this.presenceInterval) {
+      clearInterval(this.presenceInterval);
+    }
+    this.presenceInterval = setInterval(() => {
+      if (!this.socket || !this.isConnected || !this.storageId || !this.userId) return;
+      const activity = this.isRecording ? 'recording' : (this.isEditing ? 'editing' : (this.isIdle ? 'idle' : 'idle'));
+      this.socket.emit('user_activity', {
+        storage_id: this.storageId,
+        user_id: this.userId,
+        activity
+      });
+    }, 30000); // 30s heartbeat for faster presence updates
+  }
+
+  stopPresenceHeartbeat() {
+    if (this.presenceInterval) {
+      clearInterval(this.presenceInterval);
+      this.presenceInterval = null;
+    }
   }
 
   // Check if it's safe to sync (user is not actively editing/recording)

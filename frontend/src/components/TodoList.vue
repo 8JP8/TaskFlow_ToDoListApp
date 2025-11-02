@@ -17,22 +17,10 @@
       </button>
     </div>
 
-    <!-- SYNC STATUS INDICATOR -->
-    <div class="sync-status" v-if="Object.keys(activeUsers).length > 0">
-      <div class="sync-indicator">
-        <div class="sync-dot"></div>
-        <span>{{ Object.keys(activeUsers).length }} {{ t('activeUsers') }}</span>
-        <div class="user-activity-list">
-          <div v-for="(user, userId) in activeUsers" :key="userId" class="user-activity-item">
-            <span class="activity-dot" :class="user.activity"></span>
-            <span class="activity-text">{{ t(user.activity) }}</span>
-          </div>
-        </div>
-      </div>
-    </div>
+    
 
     <!-- APP HEADER -->
-    <header class="app-header">
+    <header class="app-header" :style="{ marginBottom: (syncEnabled && otherOnlineCount > 1) ? 'var(--space-4)' : 'var(--space-8)' }" >
       <div class="header-icon-wrapper">
         <CheckCircleIcon />
       </div>
@@ -43,6 +31,12 @@
       <div class="header-info">
         <p>João Oliveira 1240369</p>
         <p>RINTE - MEEC ISEP 2025/2026</p>
+      </div>
+
+      <!-- Online users line placed right after the course info -->
+      <div class="online-users-line" v-if="syncEnabled && otherOnlineCount > 1">
+        <UsersIcon />
+        <span>{{ otherOnlineCount }} {{ t('activeUsers') }}</span>
       </div>
     </header>
 
@@ -77,7 +71,12 @@
 
       <!-- TASK STATISTICS -->
       <section class="task-stats-grid">
-        <div class="card stat-card">
+        <button 
+          @click="setFilter('completed')" 
+          class="card stat-card filter-button"
+          :class="{ 'filter-active': currentFilter === 'completed' }"
+          data-filter="completed"
+        >
           <div class="stat-icon-wrapper success">
             <CheckCircleIcon />
           </div>
@@ -85,8 +84,13 @@
             <div class="stat-number">{{ stats.completed }}</div>
             <div class="stat-label">{{ t('completed') }}</div>
           </div>
-        </div>
-        <div class="card stat-card">
+        </button>
+        <button 
+          @click="setFilter('pending')" 
+          class="card stat-card filter-button"
+          :class="{ 'filter-active': currentFilter === 'pending' }"
+          data-filter="pending"
+        >
           <div class="stat-icon-wrapper warning">
             <ClockIcon />
           </div>
@@ -94,8 +98,13 @@
             <div class="stat-number">{{ stats.pending }}</div>
             <div class="stat-label">{{ t('pending') }}</div>
           </div>
-        </div>
-        <div class="card stat-card">
+        </button>
+        <button 
+          @click="setFilter('all')" 
+          class="card stat-card filter-button"
+          :class="{ 'filter-active': currentFilter === 'all' }"
+          data-filter="all"
+        >
           <div class="stat-icon-wrapper info">
             <ListBulletIcon />
           </div>
@@ -103,14 +112,14 @@
             <div class="stat-number">{{ tasks.length }}</div>
             <div class="stat-label">{{ t('totalTasks') }}</div>
           </div>
-        </div>
+        </button>
       </section>
 
       <!-- TASK LIST -->
       <section class="task-list-section">
         <TransitionGroup name="task-list" tag="div" class="task-list">
             <div
-              v-for="task in tasks"
+              v-for="task in filteredTasks"
               :key="task._id"
               class="card task-card"
               :class="{ 
@@ -491,7 +500,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onBeforeUnmount } from 'vue';
+import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue';
 import axios from 'axios';
 import apiConfig from '../api-config.js';
 import storageManager from '../storage-manager.js';
@@ -501,7 +510,7 @@ import {
   CheckIcon, CalendarIcon, PaperClipIcon, MicrophoneIcon, EyeIcon, EyeSlashIcon,
   TrashIcon, DocumentIcon, ArrowDownTrayIcon, PlayIcon, PauseIcon, DocumentPlusIcon,
   SunIcon, MoonIcon, PencilSquareIcon, XMarkIcon, ExclamationTriangleIcon,
-  InformationCircleIcon, KeyIcon, LinkIcon, CircleStackIcon, ArrowPathIcon
+  InformationCircleIcon, KeyIcon, LinkIcon, CircleStackIcon, ArrowPathIcon, UsersIcon
 } from '@heroicons/vue/24/outline';
 
 // --- STATE MANAGEMENT ---
@@ -509,7 +518,30 @@ const tasks = ref([]);
 const newTaskTitle = ref('');
 const newTaskDescription = ref('');
 const stats = reactive({ completed: 0, pending: 0 });
+const currentFilter = ref('all'); // 'all', 'completed', 'pending'
 const isDarkMode = ref(true);
+
+// --- COMPUTED PROPERTIES ---
+const filteredTasks = computed(() => {
+  switch (currentFilter.value) {
+    case 'completed':
+      return tasks.value.filter(task => task.completed);
+    case 'pending':
+      return tasks.value.filter(task => !task.completed);
+    default:
+      return tasks.value;
+  }
+});
+
+// --- FILTER FUNCTIONS ---
+const setFilter = (filter) => {
+  // If clicking the same filter, deselect it (show all tasks)
+  if (currentFilter.value === filter) {
+    currentFilter.value = 'all';
+  } else {
+    currentFilter.value = filter;
+  }
+};
 const storageId = ref(null);
 const showUserDialog = ref(false);
 const isRegenerating = ref(false);
@@ -523,6 +555,8 @@ const generatedId = ref('');
 const showGeneratedId = ref(false);
 // Real-time sync state
 const activeUsers = ref({});
+const onlineCount = ref(0);
+const otherOnlineCount = computed(() => Math.max(onlineCount.value - 1, 0));
 const syncEnabled = ref(localStorage.getItem('realtimeSyncEnabled') !== 'false'); // Default to true, load from localStorage
 const pendingUpdates = ref([]);
 const userId = ref(null);
@@ -1019,6 +1053,11 @@ const saveEdit = async (task) => {
     if (error.response?.status === 404) {
       console.log('Task was deleted while editing, creating backup...');
       await createTaskBackup(task, 'task deleted while editing');
+      // Remove the original task from the list after backup creation
+      const taskIndex = tasks.value.findIndex(t => t._id === task._id);
+      if (taskIndex !== -1) {
+        tasks.value.splice(taskIndex, 1);
+      }
       task.isEditing = false;
       addToast('info', 'Task Deleted', 'Your changes were saved as a backup because the task was deleted.');
     } else {
@@ -1510,6 +1549,41 @@ const initializeRealtimeSync = async () => {
   
   // Update activity status
   realtimeSync.updateActivity('idle');
+
+  // Fetch current online count and subscribe to live updates
+  await fetchOnlineCount();
+  setupOnlineCountListener();
+  
+  // Start periodic sync to verify all changes
+  startPeriodicSync();
+  // Start presence prune safety net
+  startActiveUsersPrune();
+  
+  // Add manual sync trigger for immediate verification
+  window.manualSync = async () => {
+    console.log('Manual sync triggered');
+    await verifyAndSyncAllTasks();
+  };
+  
+  // Add debug functions for testing
+  window.debugSocket = () => {
+    console.log('DEBUG: Socket connection status:', realtimeSync.isConnected);
+    console.log('DEBUG: Storage ID:', storageId.value);
+    console.log('DEBUG: User ID:', userId.value);
+    console.log('DEBUG: Sync enabled:', syncEnabled.value);
+  };
+  
+  window.testSocket = async () => {
+    console.log('DEBUG: Testing Socket.IO connection...');
+    const apiUrl = await apiConfig.getApiUrl();
+    try {
+      const response = await fetch(`${apiUrl}/test-socket?storage_id=${storageId.value}`);
+      const result = await response.json();
+      console.log('DEBUG: Test socket response:', result);
+    } catch (error) {
+      console.error('DEBUG: Test socket error:', error);
+    }
+  };
   
   // Test the connection after a short delay
   setTimeout(async () => {
@@ -1527,6 +1601,8 @@ const initializeRealtimeSync = async () => {
     };
   }, 2000);
 };
+
+// (Removed) old online users fetch by presence; replaced by online-count approach
 
 const handleRemoteTaskCreated = (task) => {
   if (!syncEnabled.value) return;
@@ -1580,7 +1656,10 @@ const handleRemoteTaskCreated = (task) => {
 const handleRemoteTaskUpdated = async (data) => {
   if (!syncEnabled.value) return;
   
-  console.log('Remote task updated:', data);
+  console.log('DEBUG: Remote task updated:', data);
+  console.log('DEBUG: Update type:', data.update_type);
+  console.log('DEBUG: Task ID:', data.task_id);
+  console.log('DEBUG: Full data object:', JSON.stringify(data, null, 2));
   
   // Check if this update was made by the current user (within last 2 seconds)
   const now = Date.now();
@@ -1627,6 +1706,19 @@ const handleRemoteTaskUpdated = async (data) => {
       editDescription: data.task.description || ''
     };
     addToast('info', t('taskUpdated'), t('syncedFromAnotherDevice'));
+  } else if (data.update_type && data.update_type.includes('_deleted')) {
+    // Handle deletion updates by updating the full task data
+    console.log('Handling deletion update:', data.update_type, data.task);
+    if (data.task) {
+      tasks.value[taskIndex] = {
+        ...data.task,
+        showDetails: task.showDetails,
+        isEditing: false,
+        editTitle: data.task.title,
+        editDescription: data.task.description || ''
+      };
+    }
+    addToast('info', t('taskUpdated'), t('syncedFromAnotherDevice'));
   } else if (data.update_type === 'attachment_added') {
     // Add attachment to existing task
     console.log('Adding attachment:', data.file_info);
@@ -1649,6 +1741,34 @@ const handleRemoteTaskUpdated = async (data) => {
     };
     task.audio_notes.push(newAudio);
     addToast('info', t('audioUploadSuccess'), t('syncedFromAnotherDevice'));
+  } else if (data.update_type === 'attachment_deleted') {
+    // Handle attachment deletion - update the full task data
+    console.log('DEBUG: Processing attachment_deleted event');
+    console.log('DEBUG: Task before update:', task);
+    console.log('DEBUG: New task data:', data.task);
+    console.log('DEBUG: Task attachments before:', task.attachments?.length || 0);
+    console.log('DEBUG: Task attachments after:', data.task?.attachments?.length || 0);
+    
+    tasks.value[taskIndex] = {
+      ...data.task,
+      showDetails: task.showDetails,
+      isEditing: false,
+      editTitle: data.task.title,
+      editDescription: data.task.description || ''
+    };
+    console.log('DEBUG: Task updated successfully in local state');
+    addToast('info', t('fileDeleteSuccess'), t('syncedFromAnotherDevice'));
+  } else if (data.update_type === 'audio_deleted') {
+    // Handle audio deletion - update the full task data
+    console.log('Audio deleted, updating task:', data.task);
+    tasks.value[taskIndex] = {
+      ...data.task,
+      showDetails: task.showDetails,
+      isEditing: false,
+      editTitle: data.task.title,
+      editDescription: data.task.description || ''
+    };
+    addToast('info', t('audioDeleteSuccess'), t('syncedFromAnotherDevice'));
   }
   
   fetchTaskStats();
@@ -1709,10 +1829,10 @@ const handleUserActivity = (data) => {
     timestamp: data.timestamp
   };
   
-  // Clean up old user activities (older than 5 minutes)
-  const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+  // Clean up old user activities (older than 90 seconds)
+  const ninetySecondsAgo = Date.now() - (90 * 1000);
   Object.keys(activeUsers.value).forEach(userId => {
-    if (new Date(activeUsers.value[userId].timestamp).getTime() < fiveMinutesAgo) {
+    if (new Date(activeUsers.value[userId].timestamp).getTime() < ninetySecondsAgo) {
       delete activeUsers.value[userId];
     }
   });
@@ -1721,6 +1841,8 @@ const handleUserActivity = (data) => {
 const handleConnectionChange = (connected) => {
   if (connected) {
     addToast('success', t('realtimeSyncConnected'));
+    // Refresh online users list on reconnect
+    fetchOnlineCount();
   } else {
     addToast('error', t('realtimeSyncDisconnected'));
   }
@@ -1738,6 +1860,102 @@ const processPendingUpdates = async () => {
     } else {
       await handleRemoteTaskUpdated(update);
     }
+  }
+};
+
+// --- PERIODIC SYNC SYSTEM ---
+let periodicSyncInterval = null;
+let activeUsersPruneInterval = null;
+
+const startPeriodicSync = () => {
+  // Clear any existing interval
+  if (periodicSyncInterval) {
+    clearInterval(periodicSyncInterval);
+  }
+  
+  // Sync every 30 seconds to verify all changes
+  periodicSyncInterval = setInterval(async () => {
+    if (syncEnabled.value && realtimeSync.isConnected) {
+      console.log('Performing periodic sync to verify all changes...');
+      await verifyAndSyncAllTasks();
+    }
+  }, 30000); // 30 seconds
+};
+
+// Periodically prune inactive users (client-side safety net)
+const startActiveUsersPrune = () => {
+  if (activeUsersPruneInterval) {
+    clearInterval(activeUsersPruneInterval);
+  }
+  activeUsersPruneInterval = setInterval(() => {
+    const cutoff = Date.now() - (90 * 1000);
+    Object.keys(activeUsers.value).forEach(uid => {
+      if (new Date(activeUsers.value[uid].timestamp).getTime() < cutoff) {
+        delete activeUsers.value[uid];
+      }
+    });
+  }, 30000);
+};
+
+const verifyAndSyncAllTasks = async () => {
+  try {
+    const apiUrl = await apiConfig.getApiUrl();
+    const response = await axios.get(`${apiUrl}/tasks`, {
+      params: { storage_id: storageId.value }
+    });
+    
+    if (response.data && response.data.tasks) {
+      const serverTasks = response.data.tasks;
+      const localTasks = tasks.value;
+      
+      // Check for tasks that exist on server but not locally
+      for (const serverTask of serverTasks) {
+        const localTask = localTasks.find(t => t._id === serverTask._id);
+        if (!localTask) {
+          console.log('Found missing task on server, adding locally:', serverTask._id);
+          const newTask = {
+            ...serverTask,
+            showDetails: false,
+            isEditing: false,
+            editTitle: serverTask.title,
+            editDescription: serverTask.description || ''
+          };
+          tasks.value.unshift(newTask);
+        } else {
+          // Check if server task has more recent updates
+          const serverUpdated = new Date(serverTask.updated_at || serverTask.created_at);
+          const localUpdated = new Date(localTask.updated_at || localTask.created_at);
+          
+          if (serverUpdated > localUpdated) {
+            console.log('Server task is more recent, updating locally:', serverTask._id);
+            const taskIndex = localTasks.findIndex(t => t._id === serverTask._id);
+            if (taskIndex !== -1) {
+              tasks.value[taskIndex] = {
+                ...serverTask,
+                showDetails: localTask.showDetails,
+                isEditing: false,
+                editTitle: serverTask.title,
+                editDescription: serverTask.description || ''
+              };
+            }
+          }
+        }
+      }
+      
+      // Check for tasks that exist locally but not on server (might have been deleted)
+      for (let i = localTasks.length - 1; i >= 0; i--) {
+        const localTask = localTasks[i];
+        const serverTask = serverTasks.find(t => t._id === localTask._id);
+        if (!serverTask && !localTask.isEditing) {
+          console.log('Found deleted task on server, removing locally:', localTask._id);
+          tasks.value.splice(i, 1);
+        }
+      }
+      
+      fetchTaskStats();
+    }
+  } catch (error) {
+    console.error('Error during periodic sync:', error);
   }
 };
 
@@ -2249,12 +2467,46 @@ onBeforeUnmount(() => {
     audioPlayer.value.src = '';
   }
   
+  // Clean up periodic sync
+  if (periodicSyncInterval) {
+    clearInterval(periodicSyncInterval);
+    periodicSyncInterval = null;
+  }
+  if (activeUsersPruneInterval) {
+    clearInterval(activeUsersPruneInterval);
+    activeUsersPruneInterval = null;
+  }
+  
   // Disconnect real-time sync
   realtimeSync.disconnect();
   
   // Clean up event listeners
   document.removeEventListener('visibilitychange', handleVisibilityChange);
 });
+
+// Fetch current online connections count for the active storage
+const fetchOnlineCount = async () => {
+  try {
+    const apiUrl = await apiConfig.getApiUrl();
+    const res = await fetch(`${apiUrl}/storage/online-count?storage_id=${encodeURIComponent(storageId.value)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    onlineCount.value = Number(data.count || 0);
+  } catch (e) {
+    // ignore
+  }
+};
+
+// Listen to socket event that broadcasts online counts
+const setupOnlineCountListener = () => {
+  if (!realtimeSync || !realtimeSync.socket) return;
+  realtimeSync.socket.off?.('storage_online_count');
+  realtimeSync.socket.on('storage_online_count', (data) => {
+    if (data?.storage_id === storageId.value) {
+      onlineCount.value = Number(data.count || 0);
+    }
+  });
+};
 
 </script>
 
@@ -2443,6 +2695,17 @@ svg { width: 1.25rem; height: 1.25rem; }
   border-radius: 50%;
   animation: pulse-dot 2s infinite;
 }
+
+/* --- Active users footer (plain text) --- */
+.online-users-line {
+  margin-top: var(--space-1);
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
 .lang-toggle-btn {
   display: flex; align-items: center; justify-content: center;
   height: 2.5rem; padding: 0 var(--space-3);
@@ -2473,14 +2736,14 @@ svg { width: 1.25rem; height: 1.25rem; }
   border-color: var(--primary);
 }
 
-.app-header { text-align: center; margin-bottom: var(--space-8); }
+.app-header { text-align: center; }
 .header-icon-wrapper {
     display: inline-flex;
     padding: var(--space-4);
     background-color: var(--primary); /* Use the main accent color for the background */
     color: white;                     /* Make the icon inside pure white */
     border-radius: var(--radius-xl);
-    margin-bottom: var(--space-4);
+    margin-bottom: var(--space-2);
     /* Optional: Add a subtle glow effect */
     box-shadow: 0 0 20px rgba(79, 70, 229, 0.4);
 }
@@ -2611,6 +2874,62 @@ svg { width: 1.25rem; height: 1.25rem; }
 /* ------------------------------- */
 .task-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--space-4); }
 .stat-card { display: flex; align-items: center; gap: var(--space-4); }
+
+/* Filter Button Styles */
+.filter-button {
+  cursor: pointer;
+  transition: all 0.3s ease;
+  border: 2px solid transparent;
+  background: var(--bg-secondary);
+  text-align: left;
+}
+
+.filter-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px var(--shadow-color);
+}
+
+.filter-active {
+  border-color: var(--success);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.2), 0 4px 20px rgba(34, 197, 94, 0.15);
+}
+
+.filter-active[data-filter="pending"] {
+  border-color: var(--warning);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.2), 0 4px 20px rgba(245, 158, 11, 0.15);
+}
+
+/* All filter shows purple outline that stays lit then fades away */
+.filter-active[data-filter="all"] {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(147, 51, 234, 0.2), 0 4px 20px rgba(147, 51, 234, 0.15);
+  animation: fadeOutline 2s ease-out forwards;
+}
+
+@keyframes fadeOutline {
+  0% {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(147, 51, 234, 0.2), 0 4px 20px rgba(147, 51, 234, 0.15);
+  }
+  50% {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(147, 51, 234, 0.2), 0 4px 20px rgba(147, 51, 234, 0.15);
+  }
+  100% {
+    border-color: transparent;
+    box-shadow: none;
+  }
+}
+
+/* Keep original number styling */
+.filter-button .stat-number {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.filter-button .stat-label {
+  color: var(--text-secondary);
+}
 .stat-icon-wrapper {
   display: flex; padding: var(--space-3); border-radius: var(--radius-lg);
 }

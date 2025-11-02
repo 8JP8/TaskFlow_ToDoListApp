@@ -1,12 +1,13 @@
 from flask import Flask, request, jsonify, send_file
 from flask_pymongo import PyMongo
 from flask_cors import CORS
+# Corrected line: 'request' has been removed from this import
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from bson.objectid import ObjectId
 import os
 import base64
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from werkzeug.utils import secure_filename
 
 # --- App Initialization ---
@@ -31,6 +32,22 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Define the 'tasks' collection from MongoDB
 tasks_collection = mongo.db.tasks
+
+# ---------------------------------
+# Online connections by storage (Socket.IO based)
+# Structure: storage_connections = { storage_id: set([sid, ...]) }
+storage_connections = {}
+# Track which storages a sid has joined to clean up on disconnect
+sid_to_storages = {}
+
+def update_and_broadcast_online_count(storage_id: str):
+    room = f'storage_{storage_id}'
+    connections = storage_connections.get(storage_id, set())
+    count = len(connections)
+    socketio.emit('storage_online_count', {
+        'storage_id': storage_id,
+        'count': count
+    }, room=room)
 
 # Helper function to serialize MongoDB documents for JSON
 def serialize_document(doc):
@@ -62,20 +79,55 @@ def on_connect():
 @socketio.on('disconnect')
 def on_disconnect():
     print('Client disconnected from Socket.IO')
+    sid = request.sid
+    # Remove sid from all storages it was part of
+    storages = sid_to_storages.pop(sid, set())
+    for storage_id in list(storages):
+        s = storage_connections.get(storage_id)
+        if s and sid in s:
+            s.remove(sid)
+            if not s:
+                del storage_connections[storage_id]
+            else:
+                storage_connections[storage_id] = s
+        update_and_broadcast_online_count(storage_id)
 
 @socketio.on('join_storage')
 def on_join_storage(data):
     storage_id = data.get('storage_id')
-    print(f"User joining storage room: {storage_id}")
+    print(f"DEBUG: User joining storage room: {storage_id}")
     if storage_id:
-        join_room(f'storage_{storage_id}')
+        room_name = f'storage_{storage_id}'
+        print(f"DEBUG: Joining room: {room_name}")
+        join_room(room_name)
         emit('joined_storage', {'storage_id': storage_id})
+        print(f"DEBUG: User successfully joined storage room: {storage_id}")
+        # Track active socket connections
+        sid = request.sid
+        storage_connections.setdefault(storage_id, set()).add(sid)
+        sid_to_storages.setdefault(sid, set()).add(storage_id)
+        # Broadcast updated count
+        update_and_broadcast_online_count(storage_id)
 
 @socketio.on('leave_storage')
 def on_leave_storage(data):
     storage_id = data.get('storage_id')
     if storage_id:
         leave_room(f'storage_{storage_id}')
+        sid = request.sid
+        # Remove tracking
+        s = storage_connections.get(storage_id)
+        if s and sid in s:
+            s.remove(sid)
+            if not s:
+                del storage_connections[storage_id]
+            else:
+                storage_connections[storage_id] = s
+        if sid in sid_to_storages and storage_id in sid_to_storages[sid]:
+            sid_to_storages[sid].remove(storage_id)
+            if not sid_to_storages[sid]:
+                del sid_to_storages[sid]
+        update_and_broadcast_online_count(storage_id)
 
 @socketio.on('user_activity')
 def on_user_activity(data):
@@ -93,6 +145,7 @@ def on_user_activity(data):
         }, room=f'storage_{storage_id}', include_self=False)
 
 # --- API Endpoints (Routes) ---
+
 
 # [READ] Get all tasks for a specific storage
 @app.route('/api/tasks', methods=['GET'])
@@ -245,13 +298,18 @@ def test_socket():
     if not storage_id:
         return jsonify({'error': 'Storage ID is required'}), 400
     
+    print(f"DEBUG: Testing Socket.IO connection for storage: {storage_id}")
+    room_name = f'storage_{storage_id}'
+    print(f"DEBUG: Emitting test event to room: {room_name}")
+    
     # Emit a test event
     socketio.emit('test_event', {
         'message': 'Test from server',
         'storage_id': storage_id,
         'timestamp': datetime.utcnow().isoformat()
-    }, room=f'storage_{storage_id}')
+    }, room=room_name)
     
+    print(f"DEBUG: Test event emitted successfully to room: {room_name}")
     return jsonify({'message': 'Test event emitted', 'storage_id': storage_id})
 
 # [DEVICE INFO] Get storage information for debugging
@@ -268,6 +326,18 @@ def get_storage_info():
         'storage_id': storage_id,
         'task_count': task_count,
         'timestamp': datetime.utcnow().isoformat()
+    })
+
+# [ONLINE COUNT] Get current active websocket connections for a storage
+@app.route('/api/storage/online-count', methods=['GET'])
+def get_online_count():
+    storage_id = request.args.get('storage_id')
+    if not storage_id:
+        return jsonify({'error': 'Storage ID is required'}), 400
+    count = len(storage_connections.get(storage_id, set()))
+    return jsonify({
+        'storage_id': storage_id,
+        'count': count
     })
 
 # [AGGREGATION] Get task statistics for a specific storage
@@ -490,6 +560,24 @@ def delete_attachment(task_id, attachment_id):
         {'$pull': {'attachments': pull_query},
          '$set': {'updated_at': datetime.utcnow()}}
     )
+    
+    # Emit real-time update to notify other users
+    updated_task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+    if updated_task:
+        print(f"DEBUG: Emitting attachment_deleted event for task {task_id} in storage {storage_id}")
+        print(f"DEBUG: Updated task attachments count: {len(updated_task.get('attachments', []))}")
+        room_name = f'storage_{storage_id}'
+        print(f"DEBUG: Emitting to room: {room_name}")
+        event_data = {
+            'task': serialize_document(updated_task),
+            'task_id': task_id,
+            'storage_id': storage_id,
+            'update_type': 'attachment_deleted'
+        }
+        print(f"DEBUG: Event data: {event_data}")
+        socketio.emit('task_updated', event_data, room=room_name)
+        print(f"DEBUG: Attachment deletion event emitted successfully to room {room_name}")
+    
     return jsonify({'message': 'Attachment deleted successfully'})
     
     return jsonify({'error': 'Attachment not found'}), 404
@@ -538,6 +626,20 @@ def delete_audio(task_id, audio_id):
         {'$pull': {'audio_notes': pull_query}, 
          '$set': {'updated_at': datetime.utcnow()}}
     )
+    
+    # Emit real-time update to notify other users
+    updated_task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+    if updated_task:
+        print(f"DEBUG: Emitting audio_deleted event for task {task_id} in storage {storage_id}")
+        print(f"DEBUG: Updated task audio_notes count: {len(updated_task.get('audio_notes', []))}")
+        socketio.emit('task_updated', {
+            'task': serialize_document(updated_task),
+            'task_id': task_id,
+            'storage_id': storage_id,
+            'update_type': 'audio_deleted'
+        }, room=f'storage_{storage_id}')
+        print(f"DEBUG: Audio deletion event emitted successfully")
+    
     return jsonify({'message': 'Audio note deleted successfully'})
 
 # [DEVICE MIGRATION] Migrate all tasks from old storage ID to new storage ID
