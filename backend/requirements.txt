@@ -5,3 +5,7 @@ flask-socketio
 Werkzeug
 python-socketio
 python-engineio
+azure-storage-blob
+azure-cosmos
+gunicorn
+eventlet

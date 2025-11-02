@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify, send_file
 from flask_pymongo import PyMongo
 from flask_cors import CORS
-# Corrected line: 'request' has been removed from this import
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from bson.objectid import ObjectId
 import os
@@ -9,26 +8,38 @@ import base64
 import uuid
 from datetime import datetime, timedelta
 from werkzeug.utils import secure_filename
+import azure_config
+from azure_storage import azure_storage
 
 # --- App Initialization ---
 app = Flask(__name__)
 
 # --- Configuration ---
-app.config["MONGO_URI"] = "mongodb://localhost:27017/tododb"
-app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+# Use Azure Cosmos DB (MongoDB API) if configured, otherwise fallback to local MongoDB
+MONGO_URI = os.getenv('MONGO_URI') or azure_config.COSMOS_DB_URI or "mongodb://localhost:27017/tododb"
+if azure_config.COSMOS_DB_NAME:
+    # Extract database name from URI or use configured name
+    if MONGO_URI and '/' not in MONGO_URI.split('@')[-1].split('?')[0]:
+        MONGO_URI = f"{MONGO_URI.rstrip('/')}/{azure_config.COSMOS_DB_NAME}"
+    
+app.config["MONGO_URI"] = MONGO_URI
 
-# Create upload directory if it doesn't exist
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+# Upload folder: Use local folder if Azure Storage not configured
+app.config['UPLOAD_FOLDER'] = 'uploads' if not azure_storage.is_configured() else None
+app.config['MAX_CONTENT_LENGTH'] = azure_config.MAX_CONTENT_LENGTH
+
+# Create upload directory if not using Azure Storage
+if app.config['UPLOAD_FOLDER']:
+    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 mongo = PyMongo(app)
 
 # --- CORS Configuration ---
 # Enable Cross-Origin Resource Sharing to allow the Vue.js frontend to communicate with this API
-CORS(app)
+CORS(app, origins=azure_config.CORS_ORIGINS)
 
 # --- SocketIO Configuration ---
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins=azure_config.CORS_ORIGINS, async_mode='threading')
 
 # Define the 'tasks' collection from MongoDB
 tasks_collection = mongo.db.tasks
@@ -394,20 +405,39 @@ def upload_file(task_id):
     
     if file:
         filename = secure_filename(file.filename)
-        unique_filename = f"{uuid.uuid4()}_{filename}"
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
-        file.save(file_path)
         
-        # Store file info in database (include subdocument _id for reliable deletion)
-        file_obj_id = ObjectId()
-        file_info = {
-            '_id': file_obj_id,
-            'filename': filename,
-            'unique_filename': unique_filename,
-            'file_path': file_path,
-            'uploaded_at': datetime.utcnow(),
-            'file_size': os.path.getsize(file_path)
-        }
+        # Upload to Azure Storage if configured, otherwise use local storage
+        if azure_storage.is_configured():
+            upload_result = azure_storage.upload_file(file, filename)
+            if upload_result:
+                file_info = {
+                    '_id': ObjectId(),
+                    'filename': upload_result['filename'],
+                    'unique_filename': upload_result['unique_filename'],
+                    'blob_url': upload_result['blob_url'],
+                    'uploaded_at': datetime.utcnow(),
+                    'file_size': len(file.read()) if hasattr(file, 'read') else 0
+                }
+                # Reset file pointer
+                if hasattr(file, 'seek'):
+                    file.seek(0)
+            else:
+                return jsonify({'error': 'Failed to upload file to Azure Storage'}), 500
+        else:
+            # Local storage fallback
+            unique_filename = f"{uuid.uuid4()}_{filename}"
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+            file.save(file_path)
+            
+            file_obj_id = ObjectId()
+            file_info = {
+                '_id': file_obj_id,
+                'filename': filename,
+                'unique_filename': unique_filename,
+                'file_path': file_path,
+                'uploaded_at': datetime.utcnow(),
+                'file_size': os.path.getsize(file_path)
+            }
         
         tasks_collection.update_one(
             {'_id': ObjectId(task_id), 'storage_id': storage_id},
@@ -416,10 +446,11 @@ def upload_file(task_id):
         
         # Convert ObjectId to string for JSON serialization
         file_info_json = {
-            '_id': str(file_obj_id),
-            'filename': filename,
-            'unique_filename': unique_filename,
-            'file_path': file_path,
+            '_id': str(file_info['_id']),
+            'filename': file_info['filename'],
+            'unique_filename': file_info['unique_filename'],
+            'blob_url': file_info.get('blob_url'),
+            'file_path': file_info.get('file_path'),
             'uploaded_at': file_info['uploaded_at'].isoformat(),
             'file_size': file_info['file_size']
         }
@@ -456,21 +487,38 @@ def upload_audio(task_id):
         # Decode base64 audio data
         audio_data = base64.b64decode(data['audio_data'].split(',')[1])
         unique_filename = f"audio_{uuid.uuid4()}.webm"
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
         
-        with open(file_path, 'wb') as f:
-            f.write(audio_data)
-        
-        # Store audio info in database (include subdocument _id for reliable deletion)
-        audio_obj_id = ObjectId()
-        audio_info = {
-            '_id': audio_obj_id,
-            'filename': unique_filename,
-            'file_path': file_path,
-            'recorded_at': datetime.utcnow(),
-            'duration': data.get('duration', 0),
-            'file_size': len(audio_data)
-        }
+        # Upload to Azure Storage if configured, otherwise use local storage
+        if azure_storage.is_configured():
+            from io import BytesIO
+            audio_file = BytesIO(audio_data)
+            upload_result = azure_storage.upload_file(audio_file, unique_filename)
+            if upload_result:
+                audio_info = {
+                    '_id': ObjectId(),
+                    'filename': upload_result['unique_filename'],
+                    'blob_url': upload_result['blob_url'],
+                    'recorded_at': datetime.utcnow(),
+                    'duration': data.get('duration', 0),
+                    'file_size': len(audio_data)
+                }
+            else:
+                return jsonify({'error': 'Failed to upload audio to Azure Storage'}), 500
+        else:
+            # Local storage fallback
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+            with open(file_path, 'wb') as f:
+                f.write(audio_data)
+            
+            audio_obj_id = ObjectId()
+            audio_info = {
+                '_id': audio_obj_id,
+                'filename': unique_filename,
+                'file_path': file_path,
+                'recorded_at': datetime.utcnow(),
+                'duration': data.get('duration', 0),
+                'file_size': len(audio_data)
+            }
         
         tasks_collection.update_one(
             {'_id': ObjectId(task_id), 'storage_id': storage_id},
@@ -479,9 +527,10 @@ def upload_audio(task_id):
         
         # Convert ObjectId to string for JSON serialization
         audio_info_json = {
-            '_id': str(audio_obj_id),
-            'filename': unique_filename,
-            'file_path': file_path,
+            '_id': str(audio_info['_id']),
+            'filename': audio_info['filename'],
+            'blob_url': audio_info.get('blob_url'),
+            'file_path': audio_info.get('file_path'),
             'recorded_at': audio_info['recorded_at'].isoformat(),
             'duration': audio_info['duration'],
             'file_size': audio_info['file_size']
@@ -503,18 +552,38 @@ def upload_audio(task_id):
 # [FILE DOWNLOAD] Download uploaded file
 @app.route('/api/files/<filename>')
 def download_file(filename):
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    if os.path.exists(file_path):
-        return send_file(file_path, as_attachment=True)
-    return jsonify({'error': 'File not found'}), 404
+    if azure_storage.is_configured():
+        # Get file URL from Azure Storage
+        blob_url = azure_storage.get_file_url(filename)
+        if blob_url:
+            # Redirect to Azure blob URL
+            from flask import redirect
+            return redirect(blob_url, code=302)
+        return jsonify({'error': 'File not found in Azure Storage'}), 404
+    else:
+        # Local storage fallback
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        if os.path.exists(file_path):
+            return send_file(file_path, as_attachment=True)
+        return jsonify({'error': 'File not found'}), 404
 
 # [AUDIO PLAY] Stream audio file
 @app.route('/api/audio/<filename>')
 def stream_audio(filename):
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    if os.path.exists(file_path):
-        return send_file(file_path, mimetype='audio/webm')
-    return jsonify({'error': 'Audio file not found'}), 404
+    if azure_storage.is_configured():
+        # Get file URL from Azure Storage
+        blob_url = azure_storage.get_file_url(filename)
+        if blob_url:
+            # Redirect to Azure blob URL
+            from flask import redirect
+            return redirect(blob_url, code=302)
+        return jsonify({'error': 'Audio file not found in Azure Storage'}), 404
+    else:
+        # Local storage fallback
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        if os.path.exists(file_path):
+            return send_file(file_path, mimetype='audio/webm')
+        return jsonify({'error': 'Audio file not found'}), 404
 
 # [DELETE ATTACHMENT] Delete file attachment
 # Supports both subdocument ObjectId and unique_filename for backward compatibility
@@ -545,8 +614,10 @@ def delete_attachment(task_id, attachment_id):
     if target is None:
         return jsonify({'error': 'Attachment not found'}), 404
 
-    # Delete file from filesystem
-    if os.path.exists(target['file_path']):
+    # Delete file from storage (Azure or local)
+    if azure_storage.is_configured() and target.get('unique_filename'):
+        azure_storage.delete_file(target['unique_filename'])
+    elif target.get('file_path') and os.path.exists(target['file_path']):
         os.remove(target['file_path'])
 
     # Remove from database
@@ -611,8 +682,10 @@ def delete_audio(task_id, audio_id):
     if target is None:
         return jsonify({'error': 'Audio note not found'}), 404
 
-    # Delete file from filesystem
-    if os.path.exists(target['file_path']):
+    # Delete file from storage (Azure or local)
+    if azure_storage.is_configured() and target.get('filename'):
+        azure_storage.delete_file(target['filename'])
+    elif target.get('file_path') and os.path.exists(target['file_path']):
         os.remove(target['file_path'])
 
     # Remove from database
@@ -678,4 +751,4 @@ def migrate_storage():
 
 # --- Run the Flask App ---
 if __name__ == '__main__':
-    socketio.run(app, debug=True, host='0.0.0.0', port=5000)
+    socketio.run(app, debug=azure_config.FLASK_DEBUG, host='0.0.0.0', port=azure_config.PORT)
