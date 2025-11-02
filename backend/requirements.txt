@@ -1,12 +1,10 @@
 Flask
 flask-pymongo
 flask-cors
+flask-pymongo
 flask-socketio
 Werkzeug
 python-socketio
 python-engineio
-azure-storage-blob
-azure-cosmos
 gunicorn
-eventlet>=0.33.0
-Werkzeug
+eventlet
