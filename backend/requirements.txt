@@ -1,7 +1,9 @@
 Flask
-flask-pymongo
 flask-cors
+flask-pymongo
 flask-socketio
 Werkzeug
 python-socketio
 python-engineio
+gunicorn
+eventlet
