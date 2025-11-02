@@ -40,15 +40,6 @@ jobs:
         mkdir -p backend/static
         cp -r frontend/dist/* backend/static/
 
-    - name: Force full Oryx rebuild
-      uses: azure/cli@v2
-      with:
-        inlineScript: |
-          az webapp config appsettings set \
-            -n ${{ env.AZURE_WEBAPP_NAME }} \
-            -g RINTE \
-            --settings SCM_DO_BUILD_DURING_DEPLOYMENT=true ENABLE_ORYX_BUILD=true
-
     - name: Deploy to Azure Web App
       uses: azure/webapps-deploy@v2
       with:
