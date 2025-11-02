@@ -35,6 +35,7 @@ jobs:
         cd frontend
         npm ci
         npm run build
+        npm audit fix --force
 
     - name: Copy frontend build to backend
       run: |
