@@ -24,11 +24,10 @@ jobs:
       with:
         python-version: ${{ env.PYTHON_VERSION }}
 
-    - name: Install backend dependencies
+    - name: Install backend dependencies (local test)
       run: |
         pip install --upgrade pip setuptools wheel
-        pip install --no-cache-dir -r requirements.txt
-        pip install --no-cache-dir gunicorn flask-socketio eventlet>=0.33.0
+        pip install -r requirements.txt
 
     - name: Build frontend
       run: |
@@ -41,9 +40,18 @@ jobs:
         mkdir -p backend/static
         cp -r frontend/dist/* backend/static/
 
+    - name: Force full Oryx rebuild
+      uses: azure/cli@v2
+      with:
+        inlineScript: |
+          az webapp config appsettings set \
+            -n ${{ env.AZURE_WEBAPP_NAME }} \
+            -g RINTE \
+            --settings SCM_DO_BUILD_DURING_DEPLOYMENT=true ENABLE_ORYX_BUILD=true
+
     - name: Deploy to Azure Web App
       uses: azure/webapps-deploy@v2
       with:
         app-name: ${{ env.AZURE_WEBAPP_NAME }}
         publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-        package: ./backend
+        package: .
