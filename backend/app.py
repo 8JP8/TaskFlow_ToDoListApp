@@ -3,9 +3,11 @@ from flask_pymongo import PyMongo
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from bson.objectid import ObjectId
+from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 import os
 import base64
 import uuid
+import sys
 from datetime import datetime, timedelta
 from werkzeug.utils import secure_filename
 
@@ -22,22 +24,71 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 # Create upload directory if it doesn't exist
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# Initialize PyMongo
-mongo = PyMongo(app)
-
-# --- CORS Configuration ---
-CORS(app)
-
-# --- SocketIO Configuration ---
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
-
-# Define the 'tasks' collection from MongoDB - with safe initialization
+# Initialize PyMongo with improved error handling for Azure Cosmos DB
 try:
+    # Configure MongoDB connection with appropriate timeouts for Cosmos DB
+    mongo = PyMongo(
+        app,
+        serverSelectionTimeoutMS=10000,  # 10 seconds
+        connectTimeoutMS=20000,           # 20 seconds
+        socketTimeoutMS=20000,            # 20 seconds
+        maxPoolSize=10,
+        retryWrites=False                 # Important for Cosmos DB
+    )
+    
+    # Test the connection
+    mongo.db.command('ping')
     tasks_collection = mongo.db.tasks
-    print("MongoDB connection established successfully")
-except Exception as e:
-    print(f"Warning: MongoDB initialization error: {e}")
+    print("=" * 60)
+    print("✅ MongoDB/Cosmos DB connection established successfully")
+    print(f"📊 Connected to database: {mongo.db.name}")
+    print(f"🌍 Environment: {os.environ.get('WEBSITE_SITE_NAME', 'local')}")
+    print("=" * 60)
+    
+except (ConnectionFailure, ServerSelectionTimeoutError) as e:
+    print("=" * 60)
+    print(f"❌ MongoDB connection error: {e}")
+    print(f"🔗 Connection string prefix: {MONGO_URI[:50]}...")
+    print("=" * 60)
     tasks_collection = None
+except Exception as e:
+    print("=" * 60)
+    print(f"⚠️ Warning: MongoDB initialization error: {e}")
+    print("=" * 60)
+    tasks_collection = None
+
+# --- CORS Configuration - Updated for Azure ---
+CORS(app, resources={
+    r"/*": {
+        "origins": [
+            "https://taskflowrinte.azurewebsites.net",
+            "http://localhost:8080",
+            "http://localhost:5000",
+            "http://127.0.0.1:8080",
+            "http://127.0.0.1:5000"
+        ],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": True
+    }
+})
+
+# --- SocketIO Configuration - Updated for Azure ---
+socketio = SocketIO(
+    app,
+    cors_allowed_origins=[
+        "https://taskflowrinte.azurewebsites.net",
+        "http://localhost:8080",
+        "http://localhost:5000",
+        "http://127.0.0.1:8080",
+        "http://127.0.0.1:5000"
+    ],
+    async_mode='eventlet',
+    logger=True,
+    engineio_logger=True,
+    ping_timeout=60,
+    ping_interval=25
+)
 
 # ---------------------------------
 # Online connections by storage (Socket.IO based)
@@ -71,14 +122,69 @@ def serialize_document(doc):
     
     return doc
 
+def check_db_connection():
+    """Check if database connection is available"""
+    if not tasks_collection:
+        return jsonify({'error': 'Database not available'}), 503
+    try:
+        mongo.db.command('ping')
+        return None
+    except Exception as e:
+        print(f"❌ Database connection lost: {e}")
+        return jsonify({'error': 'Database connection lost. Please try again.'}), 503
+
 # --- HEALTH CHECK ---
 @app.route('/health')
 def health():
-    """Health check endpoint"""
+    """Health check endpoint with detailed status"""
+    db_status = 'disconnected'
+    db_error = None
+    
+    if tasks_collection:
+        try:
+            mongo.db.command('ping')
+            db_status = 'connected'
+        except Exception as e:
+            db_status = 'error'
+            db_error = str(e)
+    
     return jsonify({
-        'status': 'healthy',
-        'mongodb': 'connected' if tasks_collection is not None else 'disconnected'
+        'status': 'healthy' if db_status == 'connected' else 'degraded',
+        'mongodb': db_status,
+        'error': db_error,
+        'environment': os.environ.get('WEBSITE_SITE_NAME', 'local')
     })
+
+# --- DIAGNOSTIC ENDPOINT ---
+@app.route('/api/diagnostic', methods=['GET'])
+def diagnostic():
+    """Detailed diagnostic endpoint for troubleshooting"""
+    diagnostics = {
+        'server': 'running',
+        'timestamp': datetime.utcnow().isoformat(),
+        'environment': os.environ.get('WEBSITE_SITE_NAME', 'local'),
+        'python_version': sys.version,
+        'mongodb': {
+            'configured': tasks_collection is not None,
+            'connection_string_prefix': MONGO_URI[:50] + '...' if MONGO_URI else 'None'
+        }
+    }
+    
+    # Test MongoDB connection
+    if tasks_collection:
+        try:
+            mongo.db.command('ping')
+            diagnostics['mongodb']['status'] = 'connected'
+            diagnostics['mongodb']['database'] = mongo.db.name
+            diagnostics['mongodb']['collections'] = mongo.db.list_collection_names()
+            diagnostics['mongodb']['task_count'] = mongo.db.tasks.count_documents({})
+        except Exception as e:
+            diagnostics['mongodb']['status'] = 'error'
+            diagnostics['mongodb']['error'] = str(e)
+    else:
+        diagnostics['mongodb']['status'] = 'not configured'
+    
+    return jsonify(diagnostics)
 
 # --- FRONTEND ROUTES ---
 @app.route('/')
@@ -96,11 +202,11 @@ def serve_static(path):
 # --- WebSocket Event Handlers ---
 @socketio.on('connect')
 def on_connect():
-    print('Client connected to Socket.IO')
+    print(f'✅ Client connected to Socket.IO: {request.sid}')
 
 @socketio.on('disconnect')
 def on_disconnect():
-    print('Client disconnected from Socket.IO')
+    print(f'👋 Client disconnected from Socket.IO: {request.sid}')
     sid = request.sid
     storages = sid_to_storages.pop(sid, set())
     for storage_id in list(storages):
@@ -166,123 +272,143 @@ def on_user_activity(data):
 
 @app.route('/api/tasks', methods=['GET'])
 def get_tasks():
-    if not tasks_collection:
-        return jsonify({'error': 'Database not available'}), 503
+    db_check = check_db_connection()
+    if db_check:
+        return db_check
     
     storage_id = request.args.get('storage_id')
     if not storage_id:
         return jsonify({'error': 'Storage ID is required'}), 400
     
-    tasks = []
-    for task in tasks_collection.find({'storage_id': storage_id}):
-        task['_id'] = str(task['_id'])
-        if 'created_at' in task and task['created_at']:
-            task['created_at'] = task['created_at'].isoformat()
-        if 'updated_at' in task and task['updated_at']:
-            task['updated_at'] = task['updated_at'].isoformat()
-        tasks.append(task)
-    return jsonify(tasks)
+    try:
+        tasks = []
+        for task in tasks_collection.find({'storage_id': storage_id}):
+            task['_id'] = str(task['_id'])
+            if 'created_at' in task and task['created_at']:
+                task['created_at'] = task['created_at'].isoformat()
+            if 'updated_at' in task and task['updated_at']:
+                task['updated_at'] = task['updated_at'].isoformat()
+            tasks.append(task)
+        return jsonify(tasks)
+    except Exception as e:
+        print(f"❌ Error fetching tasks: {e}")
+        return jsonify({'error': f'Failed to fetch tasks: {str(e)}'}), 500
 
 @app.route('/api/tasks', methods=['POST'])
 def add_task():
-    if not tasks_collection:
-        return jsonify({'error': 'Database not available'}), 503
+    db_check = check_db_connection()
+    if db_check:
+        return db_check
     
     task_data = request.get_json()
     storage_id = task_data.get('storage_id')
     if not storage_id:
         return jsonify({'error': 'Storage ID is required'}), 400
     
-    new_task = {
-        'title': task_data['title'],
-        'description': task_data.get('description', ''),
-        'completed': task_data.get('completed', False),
-        'storage_id': storage_id,
-        'created_at': datetime.utcnow(),
-        'updated_at': datetime.utcnow(),
-        'attachments': task_data.get('attachments', []),
-        'audio_notes': task_data.get('audio_notes', []),
-        'is_backup': task_data.get('is_backup', False),
-        'original_id': task_data.get('original_id'),
-        'backup_reason': task_data.get('backup_reason')
-    }
-    result = tasks_collection.insert_one(new_task)
-    created_task = tasks_collection.find_one({'_id': result.inserted_id})
-    created_task = serialize_document(created_task)
-    
-    print(f"Emitting task_created event for storage: {storage_id}")
-    socketio.emit('task_created', {
-        'task': created_task,
-        'storage_id': storage_id
-    }, room=f'storage_{storage_id}')
-    
-    return jsonify(created_task)
+    try:
+        new_task = {
+            'title': task_data['title'],
+            'description': task_data.get('description', ''),
+            'completed': task_data.get('completed', False),
+            'storage_id': storage_id,
+            'created_at': datetime.utcnow(),
+            'updated_at': datetime.utcnow(),
+            'attachments': task_data.get('attachments', []),
+            'audio_notes': task_data.get('audio_notes', []),
+            'is_backup': task_data.get('is_backup', False),
+            'original_id': task_data.get('original_id'),
+            'backup_reason': task_data.get('backup_reason')
+        }
+        result = tasks_collection.insert_one(new_task)
+        created_task = tasks_collection.find_one({'_id': result.inserted_id})
+        created_task = serialize_document(created_task)
+        
+        print(f"Emitting task_created event for storage: {storage_id}")
+        socketio.emit('task_created', {
+            'task': created_task,
+            'storage_id': storage_id
+        }, room=f'storage_{storage_id}')
+        
+        return jsonify(created_task)
+    except Exception as e:
+        print(f"❌ Error adding task: {e}")
+        return jsonify({'error': f'Failed to add task: {str(e)}'}), 500
 
 @app.route('/api/tasks/<task_id>', methods=['PUT'])
 def update_task(task_id):
-    if not tasks_collection:
-        return jsonify({'error': 'Database not available'}), 503
+    db_check = check_db_connection()
+    if db_check:
+        return db_check
     
     task_data = request.get_json()
     storage_id = task_data.get('storage_id')
     if not storage_id:
         return jsonify({'error': 'Storage ID is required'}), 400
     
-    task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
-    if not task:
-        return jsonify({'error': 'Task not found or access denied'}), 404
-    
-    update_data = {
-        'updated_at': datetime.utcnow()
-    }
-    
-    if 'completed' in task_data:
-        update_data['completed'] = task_data['completed']
-    if 'title' in task_data:
-        update_data['title'] = task_data['title']
-    if 'description' in task_data:
-        update_data['description'] = task_data['description']
-    
-    tasks_collection.update_one(
-        {'_id': ObjectId(task_id), 'storage_id': storage_id},
-        {'$set': update_data}
-    )
-    
-    updated_task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
-    if updated_task:
-        updated_task = serialize_document(updated_task)
+    try:
+        task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        if not task:
+            return jsonify({'error': 'Task not found or access denied'}), 404
         
-        print(f"Emitting task_updated event for storage: {storage_id}")
-        socketio.emit('task_updated', {
-            'task': updated_task,
-            'task_id': task_id,
-            'storage_id': storage_id
-        }, room=f'storage_{storage_id}')
-    
-    return jsonify({'message': 'Task updated successfully'})
+        update_data = {
+            'updated_at': datetime.utcnow()
+        }
+        
+        if 'completed' in task_data:
+            update_data['completed'] = task_data['completed']
+        if 'title' in task_data:
+            update_data['title'] = task_data['title']
+        if 'description' in task_data:
+            update_data['description'] = task_data['description']
+        
+        tasks_collection.update_one(
+            {'_id': ObjectId(task_id), 'storage_id': storage_id},
+            {'$set': update_data}
+        )
+        
+        updated_task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        if updated_task:
+            updated_task = serialize_document(updated_task)
+            
+            print(f"Emitting task_updated event for storage: {storage_id}")
+            socketio.emit('task_updated', {
+                'task': updated_task,
+                'task_id': task_id,
+                'storage_id': storage_id
+            }, room=f'storage_{storage_id}')
+        
+        return jsonify({'message': 'Task updated successfully'})
+    except Exception as e:
+        print(f"❌ Error updating task: {e}")
+        return jsonify({'error': f'Failed to update task: {str(e)}'}), 500
 
 @app.route('/api/tasks/<task_id>', methods=['DELETE'])
 def delete_task(task_id):
-    if not tasks_collection:
-        return jsonify({'error': 'Database not available'}), 503
+    db_check = check_db_connection()
+    if db_check:
+        return db_check
     
     storage_id = request.args.get('storage_id')
     if not storage_id:
         return jsonify({'error': 'Storage ID is required'}), 400
     
-    task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
-    if not task:
-        return jsonify({'error': 'Task not found or access denied'}), 404
-    
-    tasks_collection.delete_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
-    
-    print(f"Emitting task_deleted event for storage: {storage_id}")
-    socketio.emit('task_deleted', {
-        'task_id': task_id,
-        'storage_id': storage_id
-    }, room=f'storage_{storage_id}')
-    
-    return jsonify({'message': 'Task deleted successfully'})
+    try:
+        task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        if not task:
+            return jsonify({'error': 'Task not found or access denied'}), 404
+        
+        tasks_collection.delete_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        
+        print(f"Emitting task_deleted event for storage: {storage_id}")
+        socketio.emit('task_deleted', {
+            'task_id': task_id,
+            'storage_id': storage_id
+        }, room=f'storage_{storage_id}')
+        
+        return jsonify({'message': 'Task deleted successfully'})
+    except Exception as e:
+        print(f"❌ Error deleting task: {e}")
+        return jsonify({'error': f'Failed to delete task: {str(e)}'}), 500
 
 @app.route('/api/server/info', methods=['GET'])
 def get_server_info():
@@ -293,7 +419,8 @@ def get_server_info():
         return jsonify({
             'server_ip': local_ip,
             'hostname': hostname,
-            'port': 8000
+            'port': int(os.environ.get('PORT', 8000)),
+            'environment': os.environ.get('WEBSITE_SITE_NAME', 'local')
         })
     except Exception as e:
         return jsonify({'error': f'Could not get server info: {str(e)}'}), 500
@@ -317,20 +444,25 @@ def test_socket():
 
 @app.route('/api/storage/info', methods=['GET'])
 def get_storage_info():
-    if not tasks_collection:
-        return jsonify({'error': 'Database not available'}), 503
+    db_check = check_db_connection()
+    if db_check:
+        return db_check
     
     storage_id = request.args.get('storage_id')
     if not storage_id:
         return jsonify({'error': 'Storage ID is required'}), 400
     
-    task_count = tasks_collection.count_documents({'storage_id': storage_id})
-    
-    return jsonify({
-        'storage_id': storage_id,
-        'task_count': task_count,
-        'timestamp': datetime.utcnow().isoformat()
-    })
+    try:
+        task_count = tasks_collection.count_documents({'storage_id': storage_id})
+        
+        return jsonify({
+            'storage_id': storage_id,
+            'task_count': task_count,
+            'timestamp': datetime.utcnow().isoformat()
+        })
+    except Exception as e:
+        print(f"❌ Error getting storage info: {e}")
+        return jsonify({'error': f'Failed to get storage info: {str(e)}'}), 500
 
 @app.route('/api/storage/online-count', methods=['GET'])
 def get_online_count():
@@ -345,40 +477,46 @@ def get_online_count():
 
 @app.route('/api/tasks/stats', methods=['GET'])
 def get_task_stats():
-    if not tasks_collection:
-        return jsonify({'error': 'Database not available'}), 503
+    db_check = check_db_connection()
+    if db_check:
+        return db_check
     
     storage_id = request.args.get('storage_id')
     if not storage_id:
         return jsonify({'error': 'Storage ID is required'}), 400
     
-    pipeline = [
-        {'$match': {'storage_id': storage_id}},
-        {
-            '$group': {
-                '_id': '$completed',
-                'count': {'$sum': 1}
+    try:
+        pipeline = [
+            {'$match': {'storage_id': storage_id}},
+            {
+                '$group': {
+                    '_id': '$completed',
+                    'count': {'$sum': 1}
+                }
             }
+        ]
+        stats = list(tasks_collection.aggregate(pipeline))
+        
+        result = {
+            'completed': 0,
+            'pending': 0
         }
-    ]
-    stats = list(tasks_collection.aggregate(pipeline))
-    
-    result = {
-        'completed': 0,
-        'pending': 0
-    }
-    for stat in stats:
-        if stat['_id'] == True:
-            result['completed'] = stat['count']
-        else:
-            result['pending'] = stat['count']
-            
-    return jsonify(result)
+        for stat in stats:
+            if stat['_id'] == True:
+                result['completed'] = stat['count']
+            else:
+                result['pending'] = stat['count']
+                
+        return jsonify(result)
+    except Exception as e:
+        print(f"❌ Error getting task stats: {e}")
+        return jsonify({'error': f'Failed to get task stats: {str(e)}'}), 500
 
 @app.route('/api/tasks/<task_id>/upload', methods=['POST'])
 def upload_file(task_id):
-    if not tasks_collection:
-        return jsonify({'error': 'Database not available'}), 503
+    db_check = check_db_connection()
+    if db_check:
+        return db_check
     
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
@@ -387,59 +525,64 @@ def upload_file(task_id):
     if not storage_id:
         return jsonify({'error': 'Storage ID is required'}), 400
     
-    task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
-    if not task:
-        return jsonify({'error': 'Task not found or access denied'}), 404
-    
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
-    
-    if file:
-        filename = secure_filename(file.filename)
-        unique_filename = f"{uuid.uuid4()}_{filename}"
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
-        file.save(file_path)
+    try:
+        task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        if not task:
+            return jsonify({'error': 'Task not found or access denied'}), 404
         
-        file_obj_id = ObjectId()
-        file_info = {
-            '_id': file_obj_id,
-            'filename': filename,
-            'unique_filename': unique_filename,
-            'file_path': file_path,
-            'uploaded_at': datetime.utcnow(),
-            'file_size': os.path.getsize(file_path)
-        }
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
         
-        tasks_collection.update_one(
-            {'_id': ObjectId(task_id), 'storage_id': storage_id},
-            {'$push': {'attachments': file_info}, '$set': {'updated_at': datetime.utcnow()}}
-        )
+        if file:
+            filename = secure_filename(file.filename)
+            unique_filename = f"{uuid.uuid4()}_{filename}"
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+            file.save(file_path)
+            
+            file_obj_id = ObjectId()
+            file_info = {
+                '_id': file_obj_id,
+                'filename': filename,
+                'unique_filename': unique_filename,
+                'file_path': file_path,
+                'uploaded_at': datetime.utcnow(),
+                'file_size': os.path.getsize(file_path)
+            }
+            
+            tasks_collection.update_one(
+                {'_id': ObjectId(task_id), 'storage_id': storage_id},
+                {'$push': {'attachments': file_info}, '$set': {'updated_at': datetime.utcnow()}}
+            )
+            
+            file_info_json = {
+                '_id': str(file_obj_id),
+                'filename': filename,
+                'unique_filename': unique_filename,
+                'file_path': file_path,
+                'uploaded_at': file_info['uploaded_at'].isoformat(),
+                'file_size': file_info['file_size']
+            }
+            
+            socketio.emit('task_updated', {
+                'task_id': task_id,
+                'storage_id': storage_id,
+                'update_type': 'attachment_added',
+                'file_info': file_info_json
+            }, room=f'storage_{storage_id}')
+            
+            return jsonify({'message': 'File uploaded successfully', 'file_info': file_info})
         
-        file_info_json = {
-            '_id': str(file_obj_id),
-            'filename': filename,
-            'unique_filename': unique_filename,
-            'file_path': file_path,
-            'uploaded_at': file_info['uploaded_at'].isoformat(),
-            'file_size': file_info['file_size']
-        }
-        
-        socketio.emit('task_updated', {
-            'task_id': task_id,
-            'storage_id': storage_id,
-            'update_type': 'attachment_added',
-            'file_info': file_info_json
-        }, room=f'storage_{storage_id}')
-        
-        return jsonify({'message': 'File uploaded successfully', 'file_info': file_info})
-    
-    return jsonify({'error': 'File upload failed'}), 500
+        return jsonify({'error': 'File upload failed'}), 500
+    except Exception as e:
+        print(f"❌ Error uploading file: {e}")
+        return jsonify({'error': f'Failed to upload file: {str(e)}'}), 500
 
 @app.route('/api/tasks/<task_id>/audio', methods=['POST'])
 def upload_audio(task_id):
-    if not tasks_collection:
-        return jsonify({'error': 'Database not available'}), 503
+    db_check = check_db_connection()
+    if db_check:
+        return db_check
     
     data = request.get_json()
     if 'audio_data' not in data:
@@ -449,11 +592,11 @@ def upload_audio(task_id):
     if not storage_id:
         return jsonify({'error': 'Storage ID is required'}), 400
     
-    task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
-    if not task:
-        return jsonify({'error': 'Task not found or access denied'}), 404
-    
     try:
+        task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        if not task:
+            return jsonify({'error': 'Task not found or access denied'}), 404
+        
         audio_data = base64.b64decode(data['audio_data'].split(',')[1])
         unique_filename = f"audio_{uuid.uuid4()}.webm"
         file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
@@ -493,8 +636,8 @@ def upload_audio(task_id):
         }, room=f'storage_{storage_id}')
         
         return jsonify({'message': 'Audio uploaded successfully', 'audio_info': audio_info})
-    
     except Exception as e:
+        print(f"❌ Error uploading audio: {e}")
         return jsonify({'error': f'Audio upload failed: {str(e)}'}), 500
 
 @app.route('/api/files/<filename>')
@@ -513,114 +656,125 @@ def stream_audio(filename):
 
 @app.route('/api/tasks/<task_id>/attachments/<attachment_id>', methods=['DELETE'])
 def delete_attachment(task_id, attachment_id):
-    if not tasks_collection:
-        return jsonify({'error': 'Database not available'}), 503
+    db_check = check_db_connection()
+    if db_check:
+        return db_check
     
     storage_id = request.args.get('storage_id')
     if not storage_id:
         return jsonify({'error': 'Storage ID is required'}), 400
     
-    task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
-    if not task:
-        return jsonify({'error': 'Task not found or access denied'}), 404
-    
-    target = None
-    match_by_object_id = False
-    for attachment in task.get('attachments', []):
-        if str(attachment.get('_id', '')) == attachment_id:
-            target = attachment
-            match_by_object_id = True
-            break
-        if attachment.get('unique_filename') == attachment_id:
-            target = attachment
-            match_by_object_id = False
-            break
+    try:
+        task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        if not task:
+            return jsonify({'error': 'Task not found or access denied'}), 404
+        
+        target = None
+        match_by_object_id = False
+        for attachment in task.get('attachments', []):
+            if str(attachment.get('_id', '')) == attachment_id:
+                target = attachment
+                match_by_object_id = True
+                break
+            if attachment.get('unique_filename') == attachment_id:
+                target = attachment
+                match_by_object_id = False
+                break
 
-    if target is None:
-        return jsonify({'error': 'Attachment not found'}), 404
+        if target is None:
+            return jsonify({'error': 'Attachment not found'}), 404
 
-    if os.path.exists(target['file_path']):
-        os.remove(target['file_path'])
+        if os.path.exists(target['file_path']):
+            os.remove(target['file_path'])
 
-    if match_by_object_id and target.get('_id'):
-        pull_query = {'_id': target['_id']}
-    else:
-        pull_query = {'unique_filename': target.get('unique_filename')}
+        if match_by_object_id and target.get('_id'):
+            pull_query = {'_id': target['_id']}
+        else:
+            pull_query = {'unique_filename': target.get('unique_filename')}
 
-    tasks_collection.update_one(
-        {'_id': ObjectId(task_id), 'storage_id': storage_id},
-        {'$pull': {'attachments': pull_query},
-         '$set': {'updated_at': datetime.utcnow()}}
-    )
-    
-    updated_task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
-    if updated_task:
-        socketio.emit('task_updated', {
-            'task': serialize_document(updated_task),
-            'task_id': task_id,
-            'storage_id': storage_id,
-            'update_type': 'attachment_deleted'
-        }, room=f'storage_{storage_id}')
-    
-    return jsonify({'message': 'Attachment deleted successfully'})
+        tasks_collection.update_one(
+            {'_id': ObjectId(task_id), 'storage_id': storage_id},
+            {'$pull': {'attachments': pull_query},
+             '$set': {'updated_at': datetime.utcnow()}}
+        )
+        
+        updated_task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        if updated_task:
+            socketio.emit('task_updated', {
+                'task': serialize_document(updated_task),
+                'task_id': task_id,
+                'storage_id': storage_id,
+                'update_type': 'attachment_deleted'
+            }, room=f'storage_{storage_id}')
+        
+        return jsonify({'message': 'Attachment deleted successfully'})
+    except Exception as e:
+        print(f"❌ Error deleting attachment: {e}")
+        return jsonify({'error': f'Failed to delete attachment: {str(e)}'}), 500
 
 @app.route('/api/tasks/<task_id>/audio/<audio_id>', methods=['DELETE'])
 def delete_audio(task_id, audio_id):
-    if not tasks_collection:
-        return jsonify({'error': 'Database not available'}), 503
+    db_check = check_db_connection()
+    if db_check:
+        return db_check
     
     storage_id = request.args.get('storage_id')
     if not storage_id:
         return jsonify({'error': 'Storage ID is required'}), 400
     
-    task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
-    if not task:
-        return jsonify({'error': 'Task not found or access denied'}), 404
-    
-    target = None
-    match_by_object_id = False
-    for audio in task.get('audio_notes', []):
-        if str(audio.get('_id', '')) == audio_id:
-            target = audio
-            match_by_object_id = True
-            break
-        if audio.get('filename') == audio_id:
-            target = audio
-            match_by_object_id = False
-            break
+    try:
+        task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        if not task:
+            return jsonify({'error': 'Task not found or access denied'}), 404
+        
+        target = None
+        match_by_object_id = False
+        for audio in task.get('audio_notes', []):
+            if str(audio.get('_id', '')) == audio_id:
+                target = audio
+                match_by_object_id = True
+                break
+            if audio.get('filename') == audio_id:
+                target = audio
+                match_by_object_id = False
+                break
 
-    if target is None:
-        return jsonify({'error': 'Audio note not found'}), 404
+        if target is None:
+            return jsonify({'error': 'Audio note not found'}), 404
 
-    if os.path.exists(target['file_path']):
-        os.remove(target['file_path'])
+        if os.path.exists(target['file_path']):
+            os.remove(target['file_path'])
 
-    if match_by_object_id and target.get('_id'):
-        pull_query = {'_id': target['_id']}
-    else:
-        pull_query = {'filename': target.get('filename')}
+        if match_by_object_id and target.get('_id'):
+            pull_query = {'_id': target['_id']}
+        else:
+            pull_query = {'filename': target.get('filename')}
 
-    tasks_collection.update_one(
-        {'_id': ObjectId(task_id), 'storage_id': storage_id},
-        {'$pull': {'audio_notes': pull_query}, 
-         '$set': {'updated_at': datetime.utcnow()}}
-    )
-    
-    updated_task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
-    if updated_task:
-        socketio.emit('task_updated', {
-            'task': serialize_document(updated_task),
-            'task_id': task_id,
-            'storage_id': storage_id,
-            'update_type': 'audio_deleted'
-        }, room=f'storage_{storage_id}')
-    
-    return jsonify({'message': 'Audio note deleted successfully'})
+        tasks_collection.update_one(
+            {'_id': ObjectId(task_id), 'storage_id': storage_id},
+            {'$pull': {'audio_notes': pull_query}, 
+             '$set': {'updated_at': datetime.utcnow()}}
+        )
+        
+        updated_task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        if updated_task:
+            socketio.emit('task_updated', {
+                'task': serialize_document(updated_task),
+                'task_id': task_id,
+                'storage_id': storage_id,
+                'update_type': 'audio_deleted'
+            }, room=f'storage_{storage_id}')
+        
+        return jsonify({'message': 'Audio note deleted successfully'})
+    except Exception as e:
+        print(f"❌ Error deleting audio: {e}")
+        return jsonify({'error': f'Failed to delete audio: {str(e)}'}), 500
 
 @app.route('/api/storage/migrate', methods=['POST'])
 def migrate_storage():
-    if not tasks_collection:
-        return jsonify({'error': 'Database not available'}), 503
+    db_check = check_db_connection()
+    if db_check:
+        return db_check
     
     data = request.get_json()
     old_storage_id = data.get('old_storage_id')
@@ -647,9 +801,11 @@ def migrate_storage():
         })
         
     except Exception as e:
+        print(f"❌ Error migrating storage: {e}")
         return jsonify({'error': f'Migration failed: {str(e)}'}), 500
 
 # --- Run the Flask App ---
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
+    print(f"🚀 Starting server on port {port}")
     socketio.run(app, debug=True, host='0.0.0.0', port=port)
