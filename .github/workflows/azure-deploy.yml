@@ -26,9 +26,6 @@ jobs:
 
     - name: Install backend dependencies
       run: |
-        cd backend
-        python -m venv antenv
-        source antenv/bin/activate
         pip install --upgrade pip setuptools wheel
         pip install --no-cache-dir -r requirements.txt
         pip install --no-cache-dir gunicorn  flask-socketio eventlet>=0.33.0
