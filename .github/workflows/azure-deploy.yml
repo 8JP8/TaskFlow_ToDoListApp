@@ -24,8 +24,9 @@ jobs:
       with:
         python-version: ${{ env.PYTHON_VERSION }}
 
-    - name: Install backend dependencies (local test)
+    - name: Install backend dependencies (local verification)
       run: |
+        cd backend
         pip install --upgrade pip setuptools wheel
         pip install -r requirements.txt
 
