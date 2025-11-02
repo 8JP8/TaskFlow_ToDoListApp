@@ -24,25 +24,34 @@ jobs:
       with:
         python-version: ${{ env.PYTHON_VERSION }}
 
+    # Install backend dependencies (no need to cd inside GitHub actions runner)
     - name: Install backend dependencies
+      working-directory: ./backend
       run: |
-        cd backend
         pip install -r requirements.txt
 
+    # Build frontend
     - name: Build frontend
+      working-directory: ./frontend
       run: |
-        cd frontend
         npm ci
         npm run build
 
+    # Copy frontend build output into backend/static
     - name: Copy frontend build to backend
       run: |
         mkdir -p backend/static
         cp -r frontend/dist/* backend/static/
 
+    # Zip the entire backend folder (important)
+    - name: Prepare deployment package
+      run: |
+        zip -r backend.zip backend
+
+    # Deploy using the publish profile
     - name: Deploy to Azure Web App
       uses: azure/webapps-deploy@v2
       with:
         app-name: ${{ env.AZURE_WEBAPP_NAME }}
         publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-        package: ./backend
+        package: ./backend.zip
