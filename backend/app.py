@@ -28,16 +28,16 @@ app = Flask(__name__, static_folder='static', static_url_path='')
 MONGO_URI = os.environ.get("MONGO_URI")
 db_type = "environment variable"
 if not MONGO_URI:
-    if azure_config.AzureEnvironment and azure_config.COSMOS_DB_URI:
-        # Using Azure Cosmos DB
+if azure_config.AzureEnvironment and azure_config.COSMOS_DB_URI:
+    # Using Azure Cosmos DB
         MONGO_URI = azure_config.COSMOS_DB_URI
         db_type = "Azure Cosmos DB"
-        # Extract database name from URI or use configured name
-        if azure_config.COSMOS_DB_NAME:
-            if MONGO_URI and '/' not in MONGO_URI.split('@')[-1].split('?')[0]:
-                MONGO_URI = f"{MONGO_URI.rstrip('/')}/{azure_config.COSMOS_DB_NAME}"
-    else:
-        # Using local MongoDB
+    # Extract database name from URI or use configured name
+    if azure_config.COSMOS_DB_NAME:
+        if MONGO_URI and '/' not in MONGO_URI.split('@')[-1].split('?')[0]:
+            MONGO_URI = f"{MONGO_URI.rstrip('/')}/{azure_config.COSMOS_DB_NAME}"
+else:
+    # Using local MongoDB
         MONGO_URI = "mongodb://localhost:27017/tododb"
         db_type = "local MongoDB"
     
@@ -45,12 +45,19 @@ app.config["MONGO_URI"] = MONGO_URI
 print(f"📊 MongoDB URI source: {db_type}")
 
 # --- Upload Folder Configuration ---
-# Use local folder if Azure Storage not configured or not in Azure environment
-if not azure_config.AzureEnvironment or not azure_storage.is_configured():
-    app.config['UPLOAD_FOLDER'] = 'uploads'
-    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+# Always create local uploads folder for local development
+# Use Azure Storage if configured AND in Azure environment
+local_uploads_folder = os.path.join(os.path.dirname(__file__), 'uploads')
+os.makedirs(local_uploads_folder, exist_ok=True)
+
+if azure_config.AzureEnvironment and azure_storage.is_configured():
+    # Azure: Use Azure Storage (local folder as fallback)
+    app.config['UPLOAD_FOLDER'] = None
+    print("☁️ Using Azure Storage for file uploads")
 else:
-    app.config['UPLOAD_FOLDER'] = None  # Use Azure Storage
+    # Local: Use local uploads folder
+    app.config['UPLOAD_FOLDER'] = local_uploads_folder
+    print(f"📁 Using local storage: {local_uploads_folder}")
 
 app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get("MAX_CONTENT_LENGTH", azure_config.MAX_CONTENT_LENGTH))
 
@@ -84,14 +91,14 @@ except Exception as e:
 # --- CORS Configuration ---
 # Conditionally enable CORS based on USE_CORS configuration
 if cors_config.USE_CORS:
-    CORS(app, resources={
-        r"/*": {
+CORS(app, resources={
+    r"/*": {
             "origins": cors_config.CORS_ORIGINS,
             "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             "allow_headers": ["Content-Type", "Authorization"],
-            "supports_credentials": True
-        }
-    })
+        "supports_credentials": True
+    }
+})
     print(f"✅ CORS enabled with origins: {cors_config.CORS_ORIGINS}")
 else:
     print("⚠️ CORS is disabled")
