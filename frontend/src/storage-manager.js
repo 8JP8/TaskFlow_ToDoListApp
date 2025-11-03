@@ -155,7 +155,7 @@ class StorageManager {
     this.storageId = this.generateStorageId();
     this.storeStorageIdSecurely(this.storageId);
     
-    console.log('Generated new storage ID:', this.storageId);
+    console.log('Generated new storage ID');
     return this.storageId;
   }
 
@@ -163,7 +163,7 @@ class StorageManager {
   setStorageId(newStorageId) {
     this.storageId = newStorageId;
     this.storeStorageIdSecurely(newStorageId);
-    console.log('Storage ID updated:', newStorageId);
+    console.log('Storage ID updated');
   }
 
   // Reset storage ID (for testing purposes)

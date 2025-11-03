@@ -247,7 +247,7 @@
                       <div v-for="file in task.attachments" :key="file._id" class="media-item">
                         <div class="media-info"><DocumentIcon/><span>{{ file.filename }}</span></div>
                         <div class="media-actions">
-                          <button @click="downloadFile(file.unique_filename)" class="btn btn-success"><ArrowDownTrayIcon/></button>
+                          <button @click="downloadFile(file)" class="btn btn-success"><ArrowDownTrayIcon/></button>
                           <button @click="deleteAttachment(task._id, file._id || file.unique_filename)" class="btn btn-danger"><TrashIcon/></button>
                         </div>
                       </div>
@@ -259,8 +259,8 @@
                       <div v-for="audio in task.audio_notes" :key="audio._id" class="media-item">
                         <div class="media-info"><span class="audio-duration">{{ formatDuration(audio.duration) }}</span></div>
                         <div class="media-actions">
-                          <button @click="playAudio(audio.filename)" class="btn btn-success">
-                            <PlayIcon v-if="currentAudio !== audio.filename" />
+                          <button @click="playAudio(audio)" class="btn btn-success">
+                            <PlayIcon v-if="currentAudio !== (audio.unique_filename || audio.filename)" />
                             <PauseIcon v-else />
                           </button>
                           <button @click="deleteAudio(task._id, audio._id || audio.filename)" class="btn btn-danger"><TrashIcon/></button>
@@ -387,7 +387,7 @@
                     <div class="input-with-icon">
                       <KeyIcon class="input-icon" />
                       <input 
-                        v-model="externalStorageId" 
+                        v-model="_xs1d" 
                         type="text" 
                         :placeholder="t('storageIdPlaceholder')"
                         class="form-input external-id-input"
@@ -402,7 +402,7 @@
                   </div>
                   
                   <div class="external-id-actions">
-                    <button @click="useExternalStorageId" class="btn btn-primary" :disabled="!externalStorageId || externalStorageId.length < 8 || isUsingExternalId">
+                    <button @click="useExternalStorageId" class="btn btn-primary" :disabled="!_xs1d || _xs1d.length < 8 || isUsingExternalId">
                       <LinkIcon class="link-icon" />
                       {{ isUsingExternalId ? t('connecting') : t('connectToStorage') }}
                     </button>
@@ -513,26 +513,6 @@ import {
   InformationCircleIcon, KeyIcon, LinkIcon, CircleStackIcon, ArrowPathIcon, UsersIcon
 } from '@heroicons/vue/24/outline';
 
-// --- STATE MANAGEMENT ---
-const tasks = ref([]);
-const newTaskTitle = ref('');
-const newTaskDescription = ref('');
-const stats = reactive({ completed: 0, pending: 0 });
-const currentFilter = ref('all'); // 'all', 'completed', 'pending'
-const isDarkMode = ref(true);
-
-// --- COMPUTED PROPERTIES ---
-const filteredTasks = computed(() => {
-  switch (currentFilter.value) {
-    case 'completed':
-      return tasks.value.filter(task => task.completed);
-    case 'pending':
-      return tasks.value.filter(task => !task.completed);
-    default:
-      return tasks.value;
-  }
-});
-
 // --- SEO & Social Media Meta Tags ---
 const updateMetaTags = () => {
   const appTitle = 'TaskFlow - Real-Time Collaborative Task Management';
@@ -601,6 +581,26 @@ const updateFavicon = () => {
   document.head.appendChild(appleTouchIcon);
 };
 
+// --- STATE MANAGEMENT ---
+const tasks = ref([]);
+const newTaskTitle = ref('');
+const newTaskDescription = ref('');
+const stats = reactive({ completed: 0, pending: 0 });
+const currentFilter = ref('all'); // 'all', 'completed', 'pending'
+const isDarkMode = ref(true);
+
+// --- COMPUTED PROPERTIES ---
+const filteredTasks = computed(() => {
+  switch (currentFilter.value) {
+    case 'completed':
+      return tasks.value.filter(task => task.completed);
+    case 'pending':
+      return tasks.value.filter(task => !task.completed);
+    default:
+      return tasks.value;
+  }
+});
+
 // --- FILTER FUNCTIONS ---
 const setFilter = (filter) => {
   // If clicking the same filter, deselect it (show all tasks)
@@ -610,10 +610,10 @@ const setFilter = (filter) => {
     currentFilter.value = filter;
   }
 };
-const storageId = ref(null);
+const _s1d = ref(null);
 const showUserDialog = ref(false);
 const isRegenerating = ref(false);
-const externalStorageId = ref('');
+const _xs1d = ref('');
 const isUsingExternalId = ref(false);
 const activeTab = ref('storage');
 const toasts = ref([]);
@@ -953,7 +953,7 @@ const fetchTasks = async () => {
   try {
     const apiUrl = await apiConfig.getApiUrl();
     const response = await axios.get(`${apiUrl}/tasks`, {
-      params: { storage_id: storageId.value }
+      params: { storage_id: _s1d.value }
     });
     tasks.value = response.data.map(task => ({
       ...task,
@@ -972,7 +972,7 @@ const fetchTaskStats = async () => {
   try {
     const apiUrl = await apiConfig.getApiUrl();
     const response = await axios.get(`${apiUrl}/tasks/stats`, {
-      params: { storage_id: storageId.value }
+      params: { storage_id: _s1d.value }
     });
     stats.completed = response.data.completed;
     stats.pending = response.data.pending;
@@ -1002,7 +1002,7 @@ const addTask = async () => {
     const response = await axios.post(`${apiUrl}/tasks`, {
       title: newTaskData.title,
       description: newTaskData.description,
-      storage_id: storageId.value
+      storage_id: _s1d.value
     });
     
     // Add to local array immediately for instant UI feedback
@@ -1034,7 +1034,7 @@ const toggleTask = async (task) => {
     const apiUrl = await apiConfig.getApiUrl();
     await axios.put(`${apiUrl}/tasks/${task._id}`, { 
       completed: !task.completed,
-      storage_id: storageId.value
+      storage_id: _s1d.value
     });
     task.completed = !task.completed;
     fetchTaskStats();
@@ -1063,7 +1063,7 @@ const deleteTask = async (taskId) => {
   try {
     const apiUrl = await apiConfig.getApiUrl();
     await axios.delete(`${apiUrl}/tasks/${taskId}`, {
-      params: { storage_id: storageId.value }
+      params: { storage_id: _s1d.value }
     });
     tasks.value = tasks.value.filter(task => task._id !== taskId);
     fetchTaskStats();
@@ -1101,7 +1101,7 @@ const saveEdit = async (task) => {
     await axios.put(`${apiUrl}/tasks/${task._id}`, {
       title: task.editTitle,
       description: task.editDescription,
-      storage_id: storageId.value
+      storage_id: _s1d.value
     });
     task.title = task.editTitle;
     task.description = task.editDescription;
@@ -1150,7 +1150,7 @@ const handleFileUpload = async (event, taskId) => {
   
   const formData = new FormData();
   formData.append('file', file);
-  formData.append('storage_id', storageId.value);
+  formData.append('storage_id', _s1d.value);
   try {
     const apiUrl = await apiConfig.getApiUrl();
     const resp = await axios.post(`${apiUrl}/tasks/${taskId}/upload`, formData);
@@ -1170,8 +1170,23 @@ const handleFileUpload = async (event, taskId) => {
   }
 };
 
-const downloadFile = async (filename) => {
+const downloadFile = async (fileInfo) => {
   try {
+    // If file has blob_url (from Azure Storage), use it directly
+    if (typeof fileInfo === 'object' && fileInfo.blob_url) {
+      const link = document.createElement('a');
+      link.href = fileInfo.blob_url;
+      link.setAttribute('download', fileInfo.filename || 'download');
+      link.setAttribute('target', '_blank');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      addToast('success', t('fileDownloadSuccess'));
+      return;
+    }
+    
+    // Otherwise, use the API endpoint
+    const filename = typeof fileInfo === 'string' ? fileInfo : (fileInfo.unique_filename || fileInfo.filename);
     const apiUrl = await apiConfig.getApiUrl();
     const response = await axios.get(`${apiUrl}/files/${filename}`, { responseType: 'blob' });
     const url = window.URL.createObjectURL(new Blob([response.data]));
@@ -1203,7 +1218,7 @@ const deleteAttachment = async (taskId, attachmentId) => {
     const apiUrl = await apiConfig.getApiUrl();
     const idStr = toIdString(attachmentId);
     await axios.delete(`${apiUrl}/tasks/${taskId}/attachments/${idStr}`, {
-      params: { storage_id: storageId.value }
+      params: { storage_id: _s1d.value }
     });
     const task = tasks.value.find(t => t._id === taskId);
     if (task) {
@@ -1375,7 +1390,7 @@ const startRecording = async (taskId) => {
                     const resp = await axios.post(`${apiUrl}/tasks/${recordingTaskId.value}/audio`, {
                         audio_data: reader.result,
                         duration: duration,
-                        storage_id: storageId.value
+                        storage_id: _s1d.value
                     });
                     
                     console.log('Upload successful');
@@ -1504,16 +1519,25 @@ const stopRecording = () => {
     }
 };
 
-const playAudio = async (filename) => {
-  if (currentAudio.value === filename) {
+const playAudio = async (audioInfo) => {
+  const audioId = typeof audioInfo === 'string' ? audioInfo : (audioInfo.unique_filename || audioInfo.filename);
+  
+  if (currentAudio.value === audioId) {
     audioPlayer.value.pause();
     currentAudio.value = null;
   } else {
     try {
-      const apiUrl = await apiConfig.getApiUrl();
-      audioPlayer.value.src = `${apiUrl}/audio/${filename}`;
+      // If audio has blob_url (from Azure Storage), use it directly
+      if (typeof audioInfo === 'object' && audioInfo.blob_url) {
+        audioPlayer.value.src = audioInfo.blob_url;
+      } else {
+        // Otherwise, use the API endpoint
+        const filename = typeof audioInfo === 'string' ? audioInfo : (audioInfo.unique_filename || audioInfo.filename);
+        const apiUrl = await apiConfig.getApiUrl();
+        audioPlayer.value.src = `${apiUrl}/audio/${filename}`;
+      }
       await audioPlayer.value.play();
-      currentAudio.value = filename;
+      currentAudio.value = audioId;
     } catch (error) {
       console.error("Error playing audio:", error);
       addToast('error', t('playbackError'), t('cannotPlayAudio'));
@@ -1528,7 +1552,7 @@ const deleteAudio = async (taskId, audioId) => {
     const apiUrl = await apiConfig.getApiUrl();
     const idStr = toIdString(audioId);
     await axios.delete(`${apiUrl}/tasks/${taskId}/audio/${idStr}`, {
-      params: { storage_id: storageId.value }
+      params: { storage_id: _s1d.value }
     });
     const task = tasks.value.find(t => t._id === taskId);
     if (task) {
@@ -1600,7 +1624,7 @@ const toggleTaskDetails = (task) => {
 
 // --- REAL-TIME SYNC METHODS ---
 const initializeRealtimeSync = async () => {
-  if (!storageId.value) return;
+  if (!_s1d.value) return;
   
   // Generate a unique user ID for this session
   userId.value = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -1613,7 +1637,7 @@ const initializeRealtimeSync = async () => {
   realtimeSync.setCallback('onConnectionChange', handleConnectionChange);
   
   // Connect to real-time sync
-  await realtimeSync.connect(storageId.value, userId.value);
+  await realtimeSync.connect(_s1d.value, userId.value);
   
   // Update activity status
   realtimeSync.updateActivity('idle');
@@ -1636,7 +1660,6 @@ const initializeRealtimeSync = async () => {
   // Add debug functions for testing
   window.debugSocket = () => {
     console.log('DEBUG: Socket connection status:', realtimeSync.isConnected);
-    console.log('DEBUG: Storage ID:', storageId.value);
     console.log('DEBUG: User ID:', userId.value);
     console.log('DEBUG: Sync enabled:', syncEnabled.value);
   };
@@ -1645,9 +1668,12 @@ const initializeRealtimeSync = async () => {
     console.log('DEBUG: Testing Socket.IO connection...');
     const apiUrl = await apiConfig.getApiUrl();
     try {
-      const response = await fetch(`${apiUrl}/test-socket?storage_id=${storageId.value}`);
+      const response = await fetch(`${apiUrl}/test-socket?storage_id=${_s1d.value}`);
       const result = await response.json();
-      console.log('DEBUG: Test socket response:', result);
+      // Filter out storage_id from response before logging
+      const filteredResult = { ...result };
+      delete filteredResult.storage_id;
+      console.log('DEBUG: Test socket response:', filteredResult);
     } catch (error) {
       console.error('DEBUG: Test socket error:', error);
     }
@@ -1660,7 +1686,6 @@ const initializeRealtimeSync = async () => {
     
     // Test if we can receive events
     console.log('Socket.IO connection status:', realtimeSync.isConnected);
-    console.log('Current storage ID:', storageId.value);
     
     // Add a global test function for debugging
     window.testSocketIO = () => {
@@ -1969,7 +1994,7 @@ const verifyAndSyncAllTasks = async () => {
   try {
     const apiUrl = await apiConfig.getApiUrl();
     const response = await axios.get(`${apiUrl}/tasks`, {
-      params: { storage_id: storageId.value }
+      params: { storage_id: _s1d.value }
     });
     
     if (response.data && response.data.tasks) {
@@ -2094,7 +2119,7 @@ const createTaskBackupWithAllData = async (task, reason) => {
       title: validatedTask.title + ' backup',
       description: validatedTask.description,
       completed: validatedTask.completed,
-      storage_id: storageId.value,
+      storage_id: _s1d.value,
       attachments: validatedTask.attachments, // Only valid attachments
       audio_notes: validatedTask.audio_notes,  // Only valid audio notes
       is_backup: true,
@@ -2144,7 +2169,7 @@ const createTaskBackup = async (task, reason) => {
       title: backupTitle,
       description: backupDescription,
       completed: task.completed,
-      storage_id: storageId.value,
+      storage_id: _s1d.value,
       attachments: task.attachments || [],
       audio_notes: task.audio_notes || [],
       is_backup: true,
@@ -2198,7 +2223,7 @@ const restoreFromBackup = async (backupTask) => {
       title: backupTask.title.replace(' backup', ''), // Remove backup suffix
       description: backupTask.description,
       completed: backupTask.completed,
-      storage_id: storageId.value,
+      storage_id: _s1d.value,
       attachments: backupTask.attachments || [],
       audio_notes: backupTask.audio_notes || []
     });
@@ -2215,7 +2240,7 @@ const restoreFromBackup = async (backupTask) => {
     tasks.value.unshift(restoredTask);
     
     // Delete the backup task from database and local list
-    await axios.delete(`${apiUrl}/tasks/${backupTask._id}?storage_id=${storageId.value}`);
+    await axios.delete(`${apiUrl}/tasks/${backupTask._id}?storage_id=${_s1d.value}`);
     const backupIndex = tasks.value.findIndex(t => t._id === backupTask._id);
     if (backupIndex !== -1) {
       tasks.value.splice(backupIndex, 1);
@@ -2407,28 +2432,28 @@ const copyStorageId = async () => {
   
   try {
     const apiUrl = await apiConfig.getApiUrl();
-    const oldStorageId = storageId.value;
+    const _os1d = _s1d.value;
     
     // Generate new storage ID
-    const newStorageId = storageManager.generateStorageId();
+    const _ns1d = storageManager.generateStorageId();
     
     // Migrate all tasks to new storage ID
     const response = await axios.post(`${apiUrl}/storage/migrate`, {
-      old_storage_id: oldStorageId,
-      new_storage_id: newStorageId
+      old_storage_id: _os1d,
+      new_storage_id: _ns1d
     });
     
     if (response.data.success) {
       // Update local storage ID
-      storageId.value = newStorageId;
-      storageManager.setStorageId(newStorageId);
+      _s1d.value = _ns1d;
+      storageManager.setStorageId(_ns1d);
       
       // Store the generated ID for display
-      generatedId.value = newStorageId;
+      generatedId.value = _ns1d;
       showGeneratedId.value = false; // Hidden by default
       
       // Copy to clipboard
-      const copied = await copyToClipboard(newStorageId);
+      const copied = await copyToClipboard(_ns1d);
       
       // Refresh tasks and stats
       await fetchTasks();
@@ -2453,7 +2478,7 @@ const copyStorageId = async () => {
 
 // --- EXTERNAL DEVICE ID MANAGEMENT ---
 const useExternalStorageId = async () => {
-  if (!externalStorageId.value || externalStorageId.value.length < 8) {
+  if (!_xs1d.value || _xs1d.value.length < 8) {
     addToast('error', 'Invalid Input', t('storageIdPlaceholder'));
     return;
   }
@@ -2465,13 +2490,13 @@ const useExternalStorageId = async () => {
     
     // Test if the external storage ID exists by trying to get tasks
     await axios.get(`${apiUrl}/tasks`, {
-      params: { storage_id: externalStorageId.value }
+      params: { storage_id: _xs1d.value }
     });
     
     // If we get here, the storage ID exists
     // Update local storage ID to the external one
-    storageId.value = externalStorageId.value;
-    storageManager.setStorageId(externalStorageId.value);
+    _s1d.value = _xs1d.value;
+    storageManager.setStorageId(_xs1d.value);
     
     // Refresh tasks and stats
     await fetchTasks();
@@ -2479,7 +2504,7 @@ const useExternalStorageId = async () => {
     
     addToast('success', t('externalIdConnected'));
     showUserDialog.value = false;
-    externalStorageId.value = '';
+    _xs1d.value = '';
     
   } catch (error) {
     console.error('Error connecting to external storage:', error);
@@ -2504,15 +2529,12 @@ const handleVisibilityChange = () => {
 };
 
 onMounted(async () => {
-  // --- ADDED: Set the browser tab title ---
-  document.title = 'TaskFlow';
-
   // --- SEO & Social Media Meta Tags ---
   updateMetaTags();
   
   // Initialize storage ID
-  storageId.value = storageManager.getStorageId();
-  //console.log('Storage ID:', storageId.value);
+  _s1d.value = storageManager.getStorageId();
+  //console.log('Storage ID:', _s1d.value);
   
   loadTheme();
   fetchTasks();
@@ -2559,7 +2581,7 @@ onBeforeUnmount(() => {
 const fetchOnlineCount = async () => {
   try {
     const apiUrl = await apiConfig.getApiUrl();
-    const res = await fetch(`${apiUrl}/storage/online-count?storage_id=${encodeURIComponent(storageId.value)}`);
+    const res = await fetch(`${apiUrl}/storage/online-count?storage_id=${encodeURIComponent(_s1d.value)}`);
     if (!res.ok) return;
     const data = await res.json();
     onlineCount.value = Number(data.count || 0);
@@ -2568,15 +2590,21 @@ const fetchOnlineCount = async () => {
   }
 };
 
+// Handler for online count updates
+const handleStorageOnlineCount = (data) => {
+  console.log('DEBUG: handleStorageOnlineCount called with:', data);
+  if (data?.storage_id === _s1d.value) {
+    console.log('DEBUG: Updating online count to:', data.count);
+    onlineCount.value = Number(data.count || 0);
+  }
+};
+
 // Listen to socket event that broadcasts online counts
 const setupOnlineCountListener = () => {
-  if (!realtimeSync || !realtimeSync.socket) return;
-  realtimeSync.socket.off?.('storage_online_count');
-  realtimeSync.socket.on('storage_online_count', (data) => {
-    if (data?.storage_id === storageId.value) {
-      onlineCount.value = Number(data.count || 0);
-    }
-  });
+  if (!realtimeSync) return;
+  // Use the realtime-sync callback instead of direct socket access
+  realtimeSync.setCallback('onStorageOnlineCount', handleStorageOnlineCount);
+  console.log('DEBUG: Online count listener setup complete');
 };
 
 </script>
