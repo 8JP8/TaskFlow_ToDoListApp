@@ -247,7 +247,7 @@
                       <div v-for="file in task.attachments" :key="file._id" class="media-item">
                         <div class="media-info"><DocumentIcon/><span>{{ file.filename }}</span></div>
                         <div class="media-actions">
-                          <button @click="downloadFile(file.unique_filename)" class="btn btn-success"><ArrowDownTrayIcon/></button>
+                          <button @click="downloadFile(file)" class="btn btn-success"><ArrowDownTrayIcon/></button>
                           <button @click="deleteAttachment(task._id, file._id || file.unique_filename)" class="btn btn-danger"><TrashIcon/></button>
                         </div>
                       </div>
@@ -259,8 +259,8 @@
                       <div v-for="audio in task.audio_notes" :key="audio._id" class="media-item">
                         <div class="media-info"><span class="audio-duration">{{ formatDuration(audio.duration) }}</span></div>
                         <div class="media-actions">
-                          <button @click="playAudio(audio.filename)" class="btn btn-success">
-                            <PlayIcon v-if="currentAudio !== audio.filename" />
+                          <button @click="playAudio(audio)" class="btn btn-success">
+                            <PlayIcon v-if="currentAudio !== (audio.unique_filename || audio.filename)" />
                             <PauseIcon v-else />
                           </button>
                           <button @click="deleteAudio(task._id, audio._id || audio.filename)" class="btn btn-danger"><TrashIcon/></button>
@@ -1102,8 +1102,23 @@ const handleFileUpload = async (event, taskId) => {
   }
 };
 
-const downloadFile = async (filename) => {
+const downloadFile = async (fileInfo) => {
   try {
+    // If file has blob_url (from Azure Storage), use it directly
+    if (typeof fileInfo === 'object' && fileInfo.blob_url) {
+      const link = document.createElement('a');
+      link.href = fileInfo.blob_url;
+      link.setAttribute('download', fileInfo.filename || 'download');
+      link.setAttribute('target', '_blank');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      addToast('success', t('fileDownloadSuccess'));
+      return;
+    }
+    
+    // Otherwise, use the API endpoint
+    const filename = typeof fileInfo === 'string' ? fileInfo : (fileInfo.unique_filename || fileInfo.filename);
     const apiUrl = await apiConfig.getApiUrl();
     const response = await axios.get(`${apiUrl}/files/${filename}`, { responseType: 'blob' });
     const url = window.URL.createObjectURL(new Blob([response.data]));
@@ -1436,16 +1451,25 @@ const stopRecording = () => {
     }
 };
 
-const playAudio = async (filename) => {
-  if (currentAudio.value === filename) {
+const playAudio = async (audioInfo) => {
+  const audioId = typeof audioInfo === 'string' ? audioInfo : (audioInfo.unique_filename || audioInfo.filename);
+  
+  if (currentAudio.value === audioId) {
     audioPlayer.value.pause();
     currentAudio.value = null;
   } else {
     try {
-      const apiUrl = await apiConfig.getApiUrl();
-      audioPlayer.value.src = `${apiUrl}/audio/${filename}`;
+      // If audio has blob_url (from Azure Storage), use it directly
+      if (typeof audioInfo === 'object' && audioInfo.blob_url) {
+        audioPlayer.value.src = audioInfo.blob_url;
+      } else {
+        // Otherwise, use the API endpoint
+        const filename = typeof audioInfo === 'string' ? audioInfo : (audioInfo.unique_filename || audioInfo.filename);
+        const apiUrl = await apiConfig.getApiUrl();
+        audioPlayer.value.src = `${apiUrl}/audio/${filename}`;
+      }
       await audioPlayer.value.play();
-      currentAudio.value = filename;
+      currentAudio.value = audioId;
     } catch (error) {
       console.error("Error playing audio:", error);
       addToast('error', t('playbackError'), t('cannotPlayAudio'));
