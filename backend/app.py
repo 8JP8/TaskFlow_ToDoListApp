@@ -28,16 +28,16 @@ app = Flask(__name__, static_folder='static', static_url_path='')
 MONGO_URI = os.environ.get("MONGO_URI")
 db_type = "environment variable"
 if not MONGO_URI:
-if azure_config.AzureEnvironment and azure_config.COSMOS_DB_URI:
-    # Using Azure Cosmos DB
+    if azure_config.AzureEnvironment and azure_config.COSMOS_DB_URI:
+        # Using Azure Cosmos DB
         MONGO_URI = azure_config.COSMOS_DB_URI
         db_type = "Azure Cosmos DB"
-    # Extract database name from URI or use configured name
-    if azure_config.COSMOS_DB_NAME:
-        if MONGO_URI and '/' not in MONGO_URI.split('@')[-1].split('?')[0]:
-            MONGO_URI = f"{MONGO_URI.rstrip('/')}/{azure_config.COSMOS_DB_NAME}"
-else:
-    # Using local MongoDB
+        # Extract database name from URI or use configured name
+        if azure_config.COSMOS_DB_NAME:
+            if MONGO_URI and '/' not in MONGO_URI.split('@')[-1].split('?')[0]:
+                MONGO_URI = f"{MONGO_URI.rstrip('/')}/{azure_config.COSMOS_DB_NAME}"
+    else:
+        # Using local MongoDB
         MONGO_URI = "mongodb://localhost:27017/tododb"
         db_type = "local MongoDB"
     
@@ -91,14 +91,14 @@ except Exception as e:
 # --- CORS Configuration ---
 # Conditionally enable CORS based on USE_CORS configuration
 if cors_config.USE_CORS:
-CORS(app, resources={
-    r"/*": {
+    CORS(app, resources={
+        r"/*": {
             "origins": cors_config.CORS_ORIGINS,
             "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             "allow_headers": ["Content-Type", "Authorization"],
-        "supports_credentials": True
-    }
-})
+            "supports_credentials": True
+        }
+    })
     print(f"✅ CORS enabled with origins: {cors_config.CORS_ORIGINS}")
 else:
     print("⚠️ CORS is disabled")
