@@ -198,7 +198,8 @@ def diagnostic():
         'environment':os.environ.get('WEBSITE_SITE_NAME','local'),
         'python_version':sys.version,
         'mongodb': {'configured': tasks_collection is not None,
-                    'connection_string_prefix': MONGO_URI[:50]+'...' if MONGO_URI else 'None'}
+                    'connection_string_prefix': MONGO_URI[:50]+'...' if MONGO_URI else 'None'},
+        'azure_storage': azure_storage.get_container_info()
     }
     if tasks_collection is not None:
         try:
@@ -208,7 +209,42 @@ def diagnostic():
             diagnostics['mongodb'].update({'status':'error','error':str(e)})
     else:
         diagnostics['mongodb']['status'] = 'not configured'
+    
+    # Add Azure Storage file list if configured
+    if azure_storage.is_configured():
+        files = azure_storage.list_files(max_results=50)
+        if files is not None:
+            diagnostics['azure_storage']['files'] = files
+            diagnostics['azure_storage']['file_count'] = len(files)
+    
     return jsonify(diagnostics)
+
+@app.route('/api/storage/files', methods=['GET'])
+def list_storage_files():
+    """List all files in Azure Storage container"""
+    try:
+        if not azure_storage.is_configured():
+            return jsonify({
+                'error': 'Azure Storage not configured',
+                'info': azure_storage.get_container_info()
+            }), 404
+        
+        max_results = int(request.args.get('max', 100))
+        files = azure_storage.list_files(max_results=max_results)
+        
+        if files is None:
+            return jsonify({'error': 'Failed to list files'}), 500
+        
+        container_info = azure_storage.get_container_info()
+        return jsonify({
+            'container': container_info.get('container_name'),
+            'account': container_info.get('account_name'),
+            'files': files,
+            'count': len(files)
+        })
+    except Exception as e:
+        print(f"❌ Error listing storage files: {e}")
+        return jsonify({'error': f'Failed to list files: {str(e)}'}), 500
 
 # --- Static frontend ---
 @app.route('/')
@@ -471,10 +507,19 @@ def upload_file(task_id):
         file_size = file.tell()
         file.seek(0)  # Reset to beginning
         
+        print(f"📤 File upload request:")
+        print(f"   📋 Original filename: {file.filename}")
+        print(f"   📏 File size: {file_size} bytes")
+        print(f"   🔧 Azure Storage configured: {azure_storage.is_configured()}")
+        print(f"   🌍 Azure Environment: {azure_config.AzureEnvironment}")
+        
         if azure_storage.is_configured():
+            print(f"   ☁️ Using Azure Storage for upload")
             upload_result = azure_storage.upload_file(file)
             if not upload_result:
+                print(f"❌ Azure Storage upload returned None")
                 return jsonify({'error': 'Failed to upload file to Azure Storage'}), 500
+            print(f"   ✅ Upload result received: {upload_result.get('unique_filename')}")
             file_info = {
                 '_id': str(uuid.uuid4()),
                 'filename': upload_result.get('filename'),
@@ -485,11 +530,14 @@ def upload_file(task_id):
             }
         else:
             # Local file storage
+            print(f"   📁 Using local file storage")
             upload_folder = app.config.get('UPLOAD_FOLDER', 'uploads')
             os.makedirs(upload_folder, exist_ok=True)
             unique_filename = f"{uuid.uuid4()}_{secure_filename(file.filename)}"
             filepath = os.path.join(upload_folder, unique_filename)
+            print(f"   📍 Saving to: {filepath}")
             file.save(filepath)
+            print(f"   ✅ File saved locally")
             file_info = {
                 '_id': str(uuid.uuid4()),
                 'filename': secure_filename(file.filename),
@@ -542,6 +590,32 @@ def download_file(filename):
     except Exception as e:
         print(f"❌ Error downloading file: {e}")
         return jsonify({'error': f'Failed to download file: {str(e)}'}), 500
+
+@app.route('/api/audio/<filename>', methods=['GET'])
+def stream_audio(filename):
+    """Stream audio file from Azure Storage or local storage"""
+    try:
+        if azure_storage.is_configured():
+            # Get audio file from Azure Blob Storage
+            blob_url = azure_storage.get_file_url(filename)
+            if not blob_url:
+                return jsonify({'error': 'Audio file not found'}), 404
+            # Return redirect to Azure blob URL
+            from flask import redirect
+            return redirect(blob_url)
+        else:
+            # Local file storage
+            upload_folder = app.config.get('UPLOAD_FOLDER', 'uploads')
+            filepath = os.path.join(upload_folder, filename)
+            if not os.path.exists(filepath):
+                return jsonify({'error': 'Audio file not found'}), 404
+            # Stream audio file with proper content type
+            return send_file(filepath, mimetype='audio/webm')
+    except Exception as e:
+        print(f"❌ Error streaming audio: {e}")
+        return jsonify({'error': f'Failed to stream audio: {str(e)}'}), 500
+
+
 
 @app.route('/api/tasks/<task_id>/attachments/<attachment_id>', methods=['DELETE'])
 def delete_attachment(task_id, attachment_id):
