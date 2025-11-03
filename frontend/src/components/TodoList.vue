@@ -2441,7 +2441,7 @@ onMounted(async () => {
   
   // Initialize storage ID
   storageId.value = storageManager.getStorageId();
-  console.log('Storage ID:', storageId.value);
+  //console.log('Storage ID:', storageId.value);
   
   loadTheme();
   fetchTasks();
