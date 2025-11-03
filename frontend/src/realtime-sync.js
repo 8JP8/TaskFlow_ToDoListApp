@@ -92,7 +92,7 @@ class RealtimeSync {
       this.callbacks.onConnectionChange?.(false);
     });
 
-    this.socket.on('joined_storage', (data) => {
+    this.socket.on('joined_storage', () => {
       console.log('DEBUG: Joined storage room');
     });
 
@@ -142,7 +142,7 @@ class RealtimeSync {
     });
 
     // Add a catch-all event listener for debugging
-    this.socket.onAny((eventName, ...args) => {
+    this.socket.onAny((eventName) => {
       console.log('DEBUG: Received Socket.IO event:', eventName);
       if (eventName === 'task_updated') {
         console.log('DEBUG: task_updated event received');

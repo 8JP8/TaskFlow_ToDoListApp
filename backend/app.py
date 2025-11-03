@@ -127,7 +127,7 @@ def serialize_document(doc):
     return doc
 
 def check_db_connection():
-    if not tasks_collection: return jsonify({'error':'Database not available'}), 503
+    if tasks_collection is None: return jsonify({'error':'Database not available'}), 503
     try:
         mongo.db.command('ping')
         return None
@@ -140,7 +140,7 @@ def check_db_connection():
 def health():
     db_status = 'disconnected'
     db_error = None
-    if tasks_collection:
+    if tasks_collection is not None:
         try: mongo.db.command('ping'); db_status = 'connected'
         except Exception as e: db_status='error'; db_error=str(e)
     return jsonify({'status':'healthy' if db_status=='connected' else 'degraded',
@@ -157,7 +157,7 @@ def diagnostic():
         'mongodb': {'configured': tasks_collection is not None,
                     'connection_string_prefix': MONGO_URI[:50]+'...' if MONGO_URI else 'None'}
     }
-    if tasks_collection:
+    if tasks_collection is not None:
         try:
             mongo.db.command('ping')
             diagnostics['mongodb'].update({'status':'connected','database':mongo.db.name,'collections':mongo.db.list_collection_names(),'task_count':mongo.db.tasks.count_documents({})})
