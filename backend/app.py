@@ -219,7 +219,7 @@ def on_user_activity(data):
         emit('user_activity_update',{'user_id':user_id,'activity':activity,'timestamp':datetime.utcnow().isoformat()},
              room=f'storage_{storage_id}', include_self=False)
 
-# --- Example API endpoint using db ---
+# --- Task API endpoints ---
 @app.route('/api/tasks', methods=['GET'])
 def get_tasks():
     db_check = check_db_connection(); 
@@ -234,6 +234,113 @@ def get_tasks():
         import traceback
         traceback.print_exc()
         return jsonify({'error':f'Failed to fetch tasks: {str(e)}'}), 500
+
+@app.route('/api/tasks', methods=['POST'])
+def create_task():
+    db_check = check_db_connection()
+    if db_check: return db_check
+    try:
+        data = request.get_json()
+        storage_id = data.get('storage_id')
+        if not storage_id: return jsonify({'error': 'Storage ID is required'}), 400
+        
+        task_data = {
+            'title': data.get('title', ''),
+            'description': data.get('description', ''),
+            'completed': False,
+            'storage_id': storage_id,
+            'created_at': datetime.utcnow(),
+            'updated_at': datetime.utcnow(),
+            'attachments': [],
+            'audio_recordings': []
+        }
+        
+        result = tasks_collection.insert_one(task_data)
+        task_data['_id'] = str(result.inserted_id)
+        
+        # Emit Socket.IO event for real-time sync
+        socketio.emit('task_created', {
+            'task': serialize_document(task_data),
+            'storage_id': storage_id
+        }, room=f'storage_{storage_id}')
+        
+        return jsonify(serialize_document(task_data)), 201
+    except Exception as e:
+        print(f"❌ Error creating task: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Failed to create task: {str(e)}'}), 500
+
+@app.route('/api/tasks/<task_id>', methods=['PUT'])
+def update_task(task_id):
+    db_check = check_db_connection()
+    if db_check: return db_check
+    try:
+        data = request.get_json()
+        storage_id = data.get('storage_id')
+        if not storage_id: return jsonify({'error': 'Storage ID is required'}), 400
+        
+        # Find the task to ensure it exists and belongs to the storage
+        task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        if not task: return jsonify({'error': 'Task not found'}), 404
+        
+        # Build update data
+        update_data = {'updated_at': datetime.utcnow()}
+        if 'title' in data: update_data['title'] = data['title']
+        if 'description' in data: update_data['description'] = data.get('description', '')
+        if 'completed' in data: update_data['completed'] = data['completed']
+        
+        # Update the task
+        tasks_collection.update_one(
+            {'_id': ObjectId(task_id), 'storage_id': storage_id},
+            {'$set': update_data}
+        )
+        
+        # Fetch updated task
+        updated_task = tasks_collection.find_one({'_id': ObjectId(task_id)})
+        
+        # Emit Socket.IO event for real-time sync
+        update_type = 'completed' if 'completed' in data else 'updated'
+        socketio.emit('task_updated', {
+            'task': serialize_document(updated_task),
+            'storage_id': storage_id,
+            'update_type': update_type
+        }, room=f'storage_{storage_id}')
+        
+        return jsonify(serialize_document(updated_task))
+    except Exception as e:
+        print(f"❌ Error updating task: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Failed to update task: {str(e)}'}), 500
+
+@app.route('/api/tasks/<task_id>', methods=['DELETE'])
+def delete_task(task_id):
+    db_check = check_db_connection()
+    if db_check: return db_check
+    try:
+        storage_id = request.args.get('storage_id')
+        if not storage_id: return jsonify({'error': 'Storage ID is required'}), 400
+        
+        # Find the task to ensure it exists and belongs to the storage
+        task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        if not task: return jsonify({'error': 'Task not found'}), 404
+        
+        # Delete the task
+        tasks_collection.delete_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        
+        # Emit Socket.IO event for real-time sync
+        socketio.emit('task_deleted', {
+            'task_id': task_id,
+            'storage_id': storage_id
+        }, room=f'storage_{storage_id}')
+        
+        return jsonify({'message': 'Task deleted successfully'})
+    except Exception as e:
+        print(f"❌ Error deleting task: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Failed to delete task: {str(e)}'}), 500
 
 @app.route('/api/tasks/stats', methods=['GET'])
 def get_task_stats():
