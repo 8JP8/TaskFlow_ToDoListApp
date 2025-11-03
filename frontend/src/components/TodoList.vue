@@ -1578,7 +1578,10 @@ const initializeRealtimeSync = async () => {
     try {
       const response = await fetch(`${apiUrl}/test-socket?storage_id=${_s1d.value}`);
       const result = await response.json();
-      console.log('DEBUG: Test socket response:', result);
+      // Filter out storage_id from response before logging
+      const filteredResult = { ...result };
+      delete filteredResult.storage_id;
+      console.log('DEBUG: Test socket response:', filteredResult);
     } catch (error) {
       console.error('DEBUG: Test socket error:', error);
     }

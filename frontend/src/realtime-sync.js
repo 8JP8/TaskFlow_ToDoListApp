@@ -244,7 +244,10 @@ class RealtimeSync {
       const apiUrl = await apiConfig.getApiUrl();
       const response = await fetch(`${apiUrl}/test-socket?storage_id=${this._s1d}`);
       const result = await response.json();
-      console.log('Test socket response:', result);
+      // Filter out storage_id from response before logging
+      const filteredResult = { ...result };
+      delete filteredResult.storage_id;
+      console.log('Test socket response:', filteredResult);
       return true;
     } catch (error) {
       console.error('Test socket failed:', error);
