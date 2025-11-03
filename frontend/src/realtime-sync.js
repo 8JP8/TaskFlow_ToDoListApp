@@ -4,7 +4,7 @@ import apiConfig from './api-config.js';
 class RealtimeSync {
   constructor() {
     this.socket = null;
-    this.storageId = null;
+    this._s1d = null;
     this.userId = null;
     this.isConnected = false;
     this.activityTimeout = null;
@@ -21,7 +21,7 @@ class RealtimeSync {
     };
   }
 
-  async connect(storageId, userId) {
+  async connect(_s1d, userId) {
     try {
       const baseUrl = await apiConfig.getBaseUrl();
       // Use the base URL for Socket.IO (not the /api endpoint)
@@ -40,7 +40,7 @@ class RealtimeSync {
         timeout: 20000
       });
 
-      this.storageId = storageId;
+      this._s1d = _s1d;
       this.userId = userId;
 
       this.setupEventListeners();
@@ -58,7 +58,6 @@ class RealtimeSync {
       this.callbacks.onConnectionChange?.(true);
       console.log('DEBUG: Real-time sync connected');
       console.log('DEBUG: Socket ID:', this.socket.id);
-      console.log('DEBUG: Storage ID:', this.storageId);
       this.joinStorageRoom();
       this.startIdleDetection();
       this.startPresenceHeartbeat();
@@ -94,41 +93,38 @@ class RealtimeSync {
     });
 
     this.socket.on('joined_storage', (data) => {
-      console.log('DEBUG: Joined storage room:', data.storage_id);
+      console.log('DEBUG: Joined storage room');
     });
 
     this.socket.on('task_created', (data) => {
-      console.log('Received task_created event:', data);
-      if (data.storage_id === this.storageId) {
+      console.log('Received task_created event');
+      if (data.storage_id === this._s1d) {
         console.log('Processing task_created for current storage');
         this.callbacks.onTaskCreated?.(data.task);
       } else {
-        console.log('Ignoring task_created for different storage:', data.storage_id);
+        console.log('Ignoring task_created for different storage');
       }
     });
 
     this.socket.on('task_updated', (data) => {
-      console.log('DEBUG: Received task_updated event:', data);
-      console.log('DEBUG: Current storage ID:', this.storageId);
-      console.log('DEBUG: Event storage ID:', data.storage_id);
+      console.log('DEBUG: Received task_updated event');
       console.log('DEBUG: Update type:', data.update_type);
-      if (data.storage_id === this.storageId) {
+      if (data.storage_id === this._s1d) {
         console.log('DEBUG: Processing task_updated for current storage');
-        console.log('DEBUG: Task data:', data.task);
         console.log('DEBUG: Calling onTaskUpdated callback');
         this.callbacks.onTaskUpdated?.(data);
       } else {
-        console.log('DEBUG: Ignoring task_updated for different storage:', data.storage_id);
+        console.log('DEBUG: Ignoring task_updated for different storage');
       }
     });
 
     this.socket.on('task_deleted', (data) => {
-      console.log('Received task_deleted event:', data);
-      if (data.storage_id === this.storageId) {
+      console.log('Received task_deleted event');
+      if (data.storage_id === this._s1d) {
         console.log('Processing task_deleted for current storage');
         this.callbacks.onTaskDeleted?.(data.task_id);
       } else {
-        console.log('Ignoring task_deleted for different storage:', data.storage_id);
+        console.log('Ignoring task_deleted for different storage');
       }
     });
 
@@ -139,46 +135,46 @@ class RealtimeSync {
     });
 
     this.socket.on('test_event', (data) => {
-      console.log('Received test event:', data);
-      if (data.storage_id === this.storageId) {
+      console.log('Received test event');
+      if (data.storage_id === this._s1d) {
         console.log('Test event for current storage:', data.message);
       }
     });
 
     // Add a catch-all event listener for debugging
     this.socket.onAny((eventName, ...args) => {
-      console.log('DEBUG: Received Socket.IO event:', eventName, args);
+      console.log('DEBUG: Received Socket.IO event:', eventName);
       if (eventName === 'task_updated') {
-        console.log('DEBUG: task_updated event received with data:', args[0]);
+        console.log('DEBUG: task_updated event received');
       }
     });
   }
 
   joinStorageRoom() {
-    if (this.socket && this.storageId) {
-      console.log('DEBUG: Joining storage room:', this.storageId);
-      this.socket.emit('join_storage', { storage_id: this.storageId });
+    if (this.socket && this._s1d) {
+      console.log('DEBUG: Joining storage room');
+      this.socket.emit('join_storage', { storage_id: this._s1d });
       console.log('DEBUG: join_storage event emitted');
     } else {
-      console.log('DEBUG: Cannot join storage room - socket:', !!this.socket, 'storageId:', this.storageId);
+      console.log('DEBUG: Cannot join storage room - socket:', !!this.socket);
     }
   }
 
   leaveStorageRoom() {
-    if (this.socket && this.storageId) {
-      this.socket.emit('leave_storage', { storage_id: this.storageId });
+    if (this.socket && this._s1d) {
+      this.socket.emit('leave_storage', { storage_id: this._s1d });
     }
   }
 
   updateActivity(activity) {
-    if (!this.socket || !this.storageId || !this.userId) return;
+    if (!this.socket || !this._s1d || !this.userId) return;
 
     this.isIdle = activity === 'idle';
     this.isEditing = activity === 'editing';
     this.isRecording = activity === 'recording';
 
     this.socket.emit('user_activity', {
-      storage_id: this.storageId,
+      storage_id: this._s1d,
       user_id: this.userId,
       activity: activity
     });
@@ -204,10 +200,10 @@ class RealtimeSync {
       clearInterval(this.presenceInterval);
     }
     this.presenceInterval = setInterval(() => {
-      if (!this.socket || !this.isConnected || !this.storageId || !this.userId) return;
+      if (!this.socket || !this.isConnected || !this._s1d || !this.userId) return;
       const activity = this.isRecording ? 'recording' : (this.isEditing ? 'editing' : (this.isIdle ? 'idle' : 'idle'));
       this.socket.emit('user_activity', {
-        storage_id: this.storageId,
+        storage_id: this._s1d,
         user_id: this.userId,
         activity
       });
@@ -239,14 +235,14 @@ class RealtimeSync {
 
   // Test the Socket.IO connection
   async testConnection() {
-    if (!this.socket || !this.storageId) {
-      console.log('Cannot test connection - not connected or no storage ID');
+    if (!this.socket || !this._s1d) {
+      console.log('Cannot test connection - not connected');
       return false;
     }
     
     try {
       const apiUrl = await apiConfig.getApiUrl();
-      const response = await fetch(`${apiUrl}/test-socket?storage_id=${this.storageId}`);
+      const response = await fetch(`${apiUrl}/test-socket?storage_id=${this._s1d}`);
       const result = await response.json();
       console.log('Test socket response:', result);
       return true;

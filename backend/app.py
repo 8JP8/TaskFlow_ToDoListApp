@@ -230,7 +230,40 @@ def get_tasks():
         tasks = [serialize_document(task) for task in tasks_collection.find({'storage_id': storage_id})]
         return jsonify(tasks)
     except Exception as e:
+        print(f"❌ Error fetching tasks: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error':f'Failed to fetch tasks: {str(e)}'}), 500
+
+@app.route('/api/tasks/stats', methods=['GET'])
+def get_task_stats():
+    db_check = check_db_connection()
+    if db_check: return db_check
+    storage_id = request.args.get('storage_id')
+    if not storage_id: return jsonify({'error':'Storage ID is required'}), 400
+    try:
+        completed = tasks_collection.count_documents({'storage_id': storage_id, 'completed': True})
+        pending = tasks_collection.count_documents({'storage_id': storage_id, 'completed': False})
+        return jsonify({'completed': completed, 'pending': pending})
+    except Exception as e:
+        print(f"❌ Error fetching task stats: {e}")
+        return jsonify({'error':f'Failed to fetch task stats: {str(e)}'}), 500
+
+@app.route('/api/storage/online-count', methods=['GET'])
+def get_online_count():
+    storage_id = request.args.get('storage_id')
+    if not storage_id: return jsonify({'error':'Storage ID is required'}), 400
+    try:
+        count = len(storage_connections.get(storage_id, set()))
+        return jsonify({'count': count, 'storage_id': storage_id})
+    except Exception as e:
+        print(f"❌ Error fetching online count: {e}")
+        return jsonify({'error':f'Failed to fetch online count: {str(e)}'}), 500
+
+@app.route('/api/test-socket', methods=['GET'])
+def test_socket():
+    storage_id = request.args.get('storage_id')
+    return jsonify({'status': 'ok', 'storage_id': storage_id, 'message': 'Socket.IO endpoint is working'})
 
 # --- Add more routes as in your current code ---
 # Upload files, audio, task CRUD, etc. remain identical to your code
