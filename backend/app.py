@@ -26,10 +26,12 @@ app = Flask(__name__, static_folder='static', static_url_path='')
 # Use Azure Cosmos DB if AzureEnvironment is True and COSMOS_DB_URI is configured
 # Otherwise use MONGO_URI from environment or local MongoDB
 MONGO_URI = os.environ.get("MONGO_URI")
+db_type = "environment variable"
 if not MONGO_URI:
     if azure_config.AzureEnvironment and azure_config.COSMOS_DB_URI:
         # Using Azure Cosmos DB
         MONGO_URI = azure_config.COSMOS_DB_URI
+        db_type = "Azure Cosmos DB"
         # Extract database name from URI or use configured name
         if azure_config.COSMOS_DB_NAME:
             if MONGO_URI and '/' not in MONGO_URI.split('@')[-1].split('?')[0]:
@@ -37,8 +39,10 @@ if not MONGO_URI:
     else:
         # Using local MongoDB
         MONGO_URI = "mongodb://localhost:27017/tododb"
-
+        db_type = "local MongoDB"
+    
 app.config["MONGO_URI"] = MONGO_URI
+print(f"📊 MongoDB URI source: {db_type}")
 
 # --- Upload Folder Configuration ---
 # Use local folder if Azure Storage not configured or not in Azure environment
@@ -65,7 +69,9 @@ try:
     print("="*60)
     print("✅ MongoDB/Cosmos DB connection established")
     print(f"📊 Database: {mongo.db.name}")
+    print(f"🔗 Connection Type: {db_type}")
     print(f"🌍 Environment: {os.environ.get('WEBSITE_SITE_NAME', 'local')}")
+    print(f"📍 MongoDB URI: {MONGO_URI.split('@')[0] if '@' in MONGO_URI else MONGO_URI.split('//')[1].split('/')[0] if '//' in MONGO_URI else 'hidden'}...")
     print("="*60)
 except (ConnectionFailure, ServerSelectionTimeoutError) as e:
     print("="*60)
@@ -91,10 +97,40 @@ else:
     print("⚠️ CORS is disabled")
 
 # --- SocketIO Configuration ---
+# Determine async_mode based on environment and available packages
+# For Azure/production: use eventlet if available
+# For local development: use threading (default, no extra packages needed)
+async_mode = 'threading'  # Default fallback
+
+# Check if eventlet is available
+try:
+    import eventlet  # noqa: F401
+    eventlet_available = True
+except ImportError:
+    eventlet_available = False
+
+if azure_config.AzureEnvironment:
+    # Azure/production: prefer eventlet if available
+    if eventlet_available:
+        async_mode = 'eventlet'
+        print("✅ Using eventlet for Socket.IO (Azure/production mode)")
+    else:
+        async_mode = 'threading'
+        print("⚠️ eventlet not available, using threading for Socket.IO")
+else:
+    # Local development: default to threading, but allow eventlet override
+    use_eventlet = os.environ.get('USE_EVENTLET', '').lower() in ('true', '1', 'yes')
+    if eventlet_available and use_eventlet:
+        async_mode = 'eventlet'
+        print("✅ Using eventlet for Socket.IO (local development)")
+    else:
+        async_mode = 'threading'
+        print("✅ Using threading for Socket.IO (local development)")
+
 socketio = SocketIO(
     app,
     cors_allowed_origins=cors_config.SOCKETIO_CORS_ORIGINS if cors_config.USE_CORS else None,
-    async_mode='eventlet',
+    async_mode=async_mode,
     logger=True,
     engineio_logger=True,
     ping_timeout=60,
@@ -252,7 +288,7 @@ def create_task():
             'created_at': datetime.utcnow(),
             'updated_at': datetime.utcnow(),
             'attachments': [],
-            'audio_recordings': []
+            'audio_notes': []
         }
         
         result = tasks_collection.insert_one(task_data)
@@ -372,9 +408,390 @@ def test_socket():
     storage_id = request.args.get('storage_id')
     return jsonify({'status': 'ok', 'storage_id': storage_id, 'message': 'Socket.IO endpoint is working'})
 
-# --- Add more routes as in your current code ---
-# Upload files, audio, task CRUD, etc. remain identical to your code
-# Just ensure no secrets are ever hardcoded, always use environment variables
+@app.route('/api/server/info', methods=['GET'])
+def server_info():
+    """Return server information for frontend auto-detection"""
+    import socket
+    try:
+        # Get the server's IP address
+        hostname = socket.gethostname()
+        server_ip = socket.gethostbyname(hostname)
+        # Try to get a more accessible IP (sometimes gethostbyname returns 127.0.0.1)
+        if server_ip == '127.0.0.1':
+            # Try to get actual local network IP
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                # Connect to a dummy address to determine local IP
+                s.connect(('8.8.8.8', 80))
+                server_ip = s.getsockname()[0]
+            except Exception:
+                pass
+            finally:
+                s.close()
+    except Exception:
+        server_ip = 'localhost'
+    
+    return jsonify({
+        'server_ip': server_ip,
+        'environment': os.environ.get('WEBSITE_SITE_NAME', 'local'),
+        'mongodb_configured': tasks_collection is not None,
+        'database_name': mongo.db.name if tasks_collection else None
+    })
+
+# --- File Upload/Download endpoints ---
+@app.route('/api/tasks/<task_id>/upload', methods=['POST'])
+def upload_file(task_id):
+    db_check = check_db_connection()
+    if db_check: return db_check
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+        
+        file = request.files['file']
+        storage_id = request.form.get('storage_id')
+        if not storage_id: return jsonify({'error': 'Storage ID is required'}), 400
+        
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+        
+        # Find the task to ensure it exists and belongs to the storage
+        task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        if not task: return jsonify({'error': 'Task not found'}), 404
+        
+        # Upload file (Azure or local)
+        # Get file size before upload
+        file.seek(0, 2)  # Seek to end
+        file_size = file.tell()
+        file.seek(0)  # Reset to beginning
+        
+        if azure_storage.is_configured():
+            upload_result = azure_storage.upload_file(file)
+            if not upload_result:
+                return jsonify({'error': 'Failed to upload file to Azure Storage'}), 500
+            file_info = {
+                '_id': str(uuid.uuid4()),
+                'filename': upload_result.get('filename'),
+                'unique_filename': upload_result.get('unique_filename'),
+                'blob_url': upload_result.get('blob_url'),
+                'uploaded_at': datetime.utcnow().isoformat(),
+                'size': file_size
+            }
+        else:
+            # Local file storage
+            upload_folder = app.config.get('UPLOAD_FOLDER', 'uploads')
+            os.makedirs(upload_folder, exist_ok=True)
+            unique_filename = f"{uuid.uuid4()}_{secure_filename(file.filename)}"
+            filepath = os.path.join(upload_folder, unique_filename)
+            file.save(filepath)
+            file_info = {
+                '_id': str(uuid.uuid4()),
+                'filename': secure_filename(file.filename),
+                'unique_filename': unique_filename,
+                'uploaded_at': datetime.utcnow().isoformat(),
+                'size': os.path.getsize(filepath)
+            }
+        
+        # Add attachment to task
+        tasks_collection.update_one(
+            {'_id': ObjectId(task_id), 'storage_id': storage_id},
+            {'$push': {'attachments': file_info}, '$set': {'updated_at': datetime.utcnow()}}
+        )
+        
+        # Fetch updated task
+        updated_task = tasks_collection.find_one({'_id': ObjectId(task_id)})
+        
+        # Emit Socket.IO event for real-time sync
+        socketio.emit('task_updated', {
+            'task': serialize_document(updated_task),
+            'storage_id': storage_id,
+            'update_type': 'attachment_added'
+        }, room=f'storage_{storage_id}')
+        
+        return jsonify({'file_info': file_info})
+    except Exception as e:
+        print(f"❌ Error uploading file: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Failed to upload file: {str(e)}'}), 500
+
+@app.route('/api/files/<filename>', methods=['GET'])
+def download_file(filename):
+    try:
+        if azure_storage.is_configured():
+            # Get file from Azure Blob Storage
+            blob_url = azure_storage.get_file_url(filename)
+            if not blob_url:
+                return jsonify({'error': 'File not found'}), 404
+            # Return redirect to Azure blob URL
+            from flask import redirect
+            return redirect(blob_url)
+        else:
+            # Local file storage
+            upload_folder = app.config.get('UPLOAD_FOLDER', 'uploads')
+            filepath = os.path.join(upload_folder, filename)
+            if not os.path.exists(filepath):
+                return jsonify({'error': 'File not found'}), 404
+            return send_file(filepath, as_attachment=True)
+    except Exception as e:
+        print(f"❌ Error downloading file: {e}")
+        return jsonify({'error': f'Failed to download file: {str(e)}'}), 500
+
+@app.route('/api/tasks/<task_id>/attachments/<attachment_id>', methods=['DELETE'])
+def delete_attachment(task_id, attachment_id):
+    db_check = check_db_connection()
+    if db_check: return db_check
+    try:
+        storage_id = request.args.get('storage_id')
+        if not storage_id: return jsonify({'error': 'Storage ID is required'}), 400
+        
+        # Find the task
+        task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        if not task: return jsonify({'error': 'Task not found'}), 404
+        
+        # Find the attachment
+        attachments = task.get('attachments', [])
+        attachment = None
+        for att in attachments:
+            att_id = toIdString(att.get('_id', ''))
+            if att_id == attachment_id or att.get('unique_filename') == attachment_id:
+                attachment = att
+                break
+        
+        if not attachment:
+            return jsonify({'error': 'Attachment not found'}), 404
+        
+        # Delete file from storage
+        unique_filename = attachment.get('unique_filename')
+        if unique_filename:
+            if azure_storage.is_configured():
+                azure_storage.delete_file(unique_filename)
+            else:
+                upload_folder = app.config.get('UPLOAD_FOLDER', 'uploads')
+                filepath = os.path.join(upload_folder, unique_filename)
+                if os.path.exists(filepath):
+                    os.remove(filepath)
+        
+        # Remove attachment from task
+        tasks_collection.update_one(
+            {'_id': ObjectId(task_id), 'storage_id': storage_id},
+            {'$pull': {'attachments': {'_id': attachment.get('_id')}}, '$set': {'updated_at': datetime.utcnow()}}
+        )
+        
+        # Fetch updated task
+        updated_task = tasks_collection.find_one({'_id': ObjectId(task_id)})
+        
+        # Emit Socket.IO event for real-time sync
+        socketio.emit('task_updated', {
+            'task': serialize_document(updated_task),
+            'storage_id': storage_id,
+            'update_type': 'attachment_deleted'
+        }, room=f'storage_{storage_id}')
+        
+        return jsonify({'message': 'Attachment deleted successfully'})
+    except Exception as e:
+        print(f"❌ Error deleting attachment: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Failed to delete attachment: {str(e)}'}), 500
+
+# --- Audio Recording endpoints ---
+@app.route('/api/tasks/<task_id>/audio', methods=['POST'])
+def upload_audio(task_id):
+    db_check = check_db_connection()
+    if db_check: return db_check
+    try:
+        data = request.get_json()
+        storage_id = data.get('storage_id')
+        if not storage_id: return jsonify({'error': 'Storage ID is required'}), 400
+        
+        audio_data = data.get('audio_data')
+        duration = data.get('duration', 0)
+        
+        if not audio_data:
+            return jsonify({'error': 'Audio data is required'}), 400
+        
+        # Find the task to ensure it exists and belongs to the storage
+        task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        if not task: return jsonify({'error': 'Task not found'}), 404
+        
+        # Decode base64 audio data
+        try:
+            audio_bytes = base64.b64decode(audio_data.split(',')[-1] if ',' in audio_data else audio_data)
+        except Exception as e:
+            return jsonify({'error': f'Invalid audio data: {str(e)}'}), 400
+        
+        # Upload audio file (Azure or local)
+        unique_filename = f"audio_{uuid.uuid4()}.webm"
+        if azure_storage.is_configured():
+            from io import BytesIO
+            audio_file = BytesIO(audio_bytes)
+            audio_file.name = unique_filename
+            upload_result = azure_storage.upload_file(audio_file, filename=unique_filename)
+            if not upload_result:
+                return jsonify({'error': 'Failed to upload audio to Azure Storage'}), 500
+            audio_info = {
+                '_id': str(uuid.uuid4()),
+                'filename': unique_filename,
+                'unique_filename': upload_result.get('unique_filename'),
+                'blob_url': upload_result.get('blob_url'),
+                'duration': duration,
+                'recorded_at': datetime.utcnow().isoformat(),
+                'size': len(audio_bytes)
+            }
+        else:
+            # Local file storage
+            upload_folder = app.config.get('UPLOAD_FOLDER', 'uploads')
+            os.makedirs(upload_folder, exist_ok=True)
+            filepath = os.path.join(upload_folder, unique_filename)
+            with open(filepath, 'wb') as f:
+                f.write(audio_bytes)
+            audio_info = {
+                '_id': str(uuid.uuid4()),
+                'filename': unique_filename,
+                'unique_filename': unique_filename,
+                'duration': duration,
+                'recorded_at': datetime.utcnow().isoformat(),
+                'size': len(audio_bytes)
+            }
+        
+        # Add audio recording to task
+        tasks_collection.update_one(
+            {'_id': ObjectId(task_id), 'storage_id': storage_id},
+            {'$push': {'audio_notes': audio_info}, '$set': {'updated_at': datetime.utcnow()}}
+        )
+        
+        # Fetch updated task
+        updated_task = tasks_collection.find_one({'_id': ObjectId(task_id)})
+        
+        # Emit Socket.IO event for real-time sync
+        socketio.emit('task_updated', {
+            'task': serialize_document(updated_task),
+            'storage_id': storage_id,
+            'update_type': 'audio_added'
+        }, room=f'storage_{storage_id}')
+        
+        return jsonify({'audio_info': audio_info})
+    except Exception as e:
+        print(f"❌ Error uploading audio: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Failed to upload audio: {str(e)}'}), 500
+
+@app.route('/api/tasks/<task_id>/audio/<audio_id>', methods=['DELETE'])
+def delete_audio(task_id, audio_id):
+    db_check = check_db_connection()
+    if db_check: return db_check
+    try:
+        storage_id = request.args.get('storage_id')
+        if not storage_id: return jsonify({'error': 'Storage ID is required'}), 400
+        
+        # Find the task
+        task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        if not task: return jsonify({'error': 'Task not found'}), 404
+        
+        # Find the audio recording
+        audio_notes = task.get('audio_notes', [])
+        audio = None
+        for aud in audio_notes:
+            aud_id = toIdString(aud.get('_id', ''))
+            if aud_id == audio_id or aud.get('unique_filename') == audio_id:
+                audio = aud
+                break
+        
+        if not audio:
+            return jsonify({'error': 'Audio recording not found'}), 404
+        
+        # Delete file from storage
+        unique_filename = audio.get('unique_filename')
+        if unique_filename:
+            if azure_storage.is_configured():
+                azure_storage.delete_file(unique_filename)
+            else:
+                upload_folder = app.config.get('UPLOAD_FOLDER', 'uploads')
+                filepath = os.path.join(upload_folder, unique_filename)
+                if os.path.exists(filepath):
+                    os.remove(filepath)
+        
+        # Remove audio recording from task
+        tasks_collection.update_one(
+            {'_id': ObjectId(task_id), 'storage_id': storage_id},
+            {'$pull': {'audio_notes': {'_id': audio.get('_id')}}, '$set': {'updated_at': datetime.utcnow()}}
+        )
+        
+        # Fetch updated task
+        updated_task = tasks_collection.find_one({'_id': ObjectId(task_id)})
+        
+        # Emit Socket.IO event for real-time sync
+        socketio.emit('task_updated', {
+            'task': serialize_document(updated_task),
+            'storage_id': storage_id,
+            'update_type': 'audio_deleted'
+        }, room=f'storage_{storage_id}')
+        
+        return jsonify({'message': 'Audio recording deleted successfully'})
+    except Exception as e:
+        print(f"❌ Error deleting audio: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Failed to delete audio: {str(e)}'}), 500
+
+# --- Storage Migration endpoint ---
+@app.route('/api/storage/migrate', methods=['POST'])
+def migrate_storage():
+    db_check = check_db_connection()
+    if db_check: return db_check
+    try:
+        data = request.get_json()
+        old_storage_id = data.get('old_storage_id')
+        new_storage_id = data.get('new_storage_id')
+        
+        if not old_storage_id or not new_storage_id:
+            return jsonify({'error': 'Both old_storage_id and new_storage_id are required'}), 400
+        
+        if old_storage_id == new_storage_id:
+            return jsonify({'error': 'Old and new storage IDs must be different'}), 400
+        
+        # Migrate all tasks from old storage to new storage
+        result = tasks_collection.update_many(
+            {'storage_id': old_storage_id},
+            {'$set': {'storage_id': new_storage_id, 'updated_at': datetime.utcnow()}}
+        )
+        
+        # Migrate socket connections
+        if old_storage_id in storage_connections:
+            old_connections = storage_connections.pop(old_storage_id, set())
+            storage_connections.setdefault(new_storage_id, set()).update(old_connections)
+            
+            # Update sid_to_storages mapping
+            for sid in old_connections:
+                if sid in sid_to_storages:
+                    sid_to_storages[sid].discard(old_storage_id)
+                    sid_to_storages[sid].add(new_storage_id)
+        
+        # Update broadcast counts
+        update_and_broadcast_online_count(new_storage_id)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Migration completed successfully',
+            'tasks_migrated': result.modified_count
+        })
+    except Exception as e:
+        print(f"❌ Error migrating storage: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Failed to migrate storage: {str(e)}'}), 500
+
+# Helper function to convert ID to string
+def toIdString(id_val):
+    """Convert various ID formats to string"""
+    if id_val is None:
+        return ''
+    if isinstance(id_val, ObjectId):
+        return str(id_val)
+    if isinstance(id_val, str):
+        return id_val
+    return str(id_val)
 
 # --- Run Flask App ---
 if __name__ == '__main__':
