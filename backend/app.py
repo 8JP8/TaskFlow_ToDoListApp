@@ -442,7 +442,7 @@ def server_info():
         'server_ip': server_ip,
         'environment': os.environ.get('WEBSITE_SITE_NAME', 'local'),
         'mongodb_configured': tasks_collection is not None,
-        'database_name': mongo.db.name if tasks_collection else None
+        'database_name': mongo.db.name if tasks_collection is not None else None
     })
 
 # --- File Upload/Download endpoints ---
