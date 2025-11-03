@@ -5,10 +5,22 @@ Handles file uploads to Azure Blob Storage
 import os
 import uuid
 from werkzeug.utils import secure_filename
-from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
-from azure.core.credentials import AzureNamedKeyCredential
-from azure.core.exceptions import AzureError
 import logging
+
+# Optional Azure Storage imports - only import if available
+try:
+    from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
+    from azure.core.credentials import AzureNamedKeyCredential
+    from azure.core.exceptions import AzureError
+    AZURE_AVAILABLE = True
+except ImportError:
+    # Azure Storage SDK not installed - use local storage only
+    AZURE_AVAILABLE = False
+    BlobServiceClient = None
+    BlobClient = None
+    ContainerClient = None
+    AzureNamedKeyCredential = None
+    AzureError = Exception
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +37,11 @@ class AzureStorageManager:
     
     def _initialize_client(self):
         """Initialize Azure Blob Storage client"""
+        # If Azure SDK is not installed, don't try to initialize
+        if not AZURE_AVAILABLE:
+            logger.info("Azure Storage SDK not installed. Using local storage only.")
+            return
+            
         try:
             if self.connection_string:
                 # Use connection string if available
@@ -67,8 +84,8 @@ class AzureStorageManager:
         Upload a file to Azure Blob Storage
         Returns the blob URL or None if upload fails
         """
-        if not self.is_configured():
-            logger.warning("Azure Storage not configured, returning None")
+        if not AZURE_AVAILABLE or not self.is_configured():
+            logger.warning("Azure Storage not available or not configured, returning None")
             return None
         
         try:
@@ -109,7 +126,7 @@ class AzureStorageManager:
         """
         Delete a file from Azure Blob Storage
         """
-        if not self.is_configured():
+        if not AZURE_AVAILABLE or not self.is_configured():
             return False
         
         try:
@@ -127,7 +144,7 @@ class AzureStorageManager:
         """
         Get the URL for a blob
         """
-        if not self.is_configured():
+        if not AZURE_AVAILABLE or not self.is_configured():
             return None
         
         try:

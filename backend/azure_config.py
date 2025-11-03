@@ -4,6 +4,11 @@ Store your Azure resource credentials here or use environment variables
 """
 import os
 
+# Azure Environment Flag
+# Default: True (Azure environment)
+# Set to False when running locally via python app.py
+AzureEnvironment = True
+
 # Cosmos DB (MongoDB API) Configuration
 COSMOS_DB_URI = os.getenv('COSMOS_DB_URI', '')
 # Format: mongodb://<account-name>:<account-key>@<account-name>.mongo.cosmos.azure.com:10255/?ssl=true&replicaSet=globaldb&retrywrites=false&maxIdleTimeMS=120000&appName=@<account-name>@

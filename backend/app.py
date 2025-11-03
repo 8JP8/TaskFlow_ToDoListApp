@@ -11,21 +11,32 @@ from werkzeug.utils import secure_filename
 import azure_config
 from azure_storage import azure_storage
 
+# --- Check if running directly (local environment) ---
+# If app.py is executed directly, set AzureEnvironment to False
+if __name__ == '__main__':
+    azure_config.AzureEnvironment = False
+
 # --- App Initialization ---
 app = Flask(__name__)
 
 # --- Configuration ---
-# Use Azure Cosmos DB (MongoDB API) if configured, otherwise fallback to local MongoDB
-MONGO_URI = os.getenv('MONGO_URI') or azure_config.COSMOS_DB_URI or "mongodb://localhost:27017/tododb"
-if azure_config.COSMOS_DB_NAME:
+# Use Azure Cosmos DB if AzureEnvironment is True and COSMOS_DB_URI is configured
+# Otherwise use local MongoDB
+if azure_config.AzureEnvironment and azure_config.COSMOS_DB_URI:
+    # Using Azure Cosmos DB
+    MONGO_URI = os.getenv('MONGO_URI') or azure_config.COSMOS_DB_URI
     # Extract database name from URI or use configured name
-    if MONGO_URI and '/' not in MONGO_URI.split('@')[-1].split('?')[0]:
-        MONGO_URI = f"{MONGO_URI.rstrip('/')}/{azure_config.COSMOS_DB_NAME}"
+    if azure_config.COSMOS_DB_NAME:
+        if MONGO_URI and '/' not in MONGO_URI.split('@')[-1].split('?')[0]:
+            MONGO_URI = f"{MONGO_URI.rstrip('/')}/{azure_config.COSMOS_DB_NAME}"
+else:
+    # Using local MongoDB
+    MONGO_URI = os.getenv('MONGO_URI') or "mongodb://localhost:27017/tododb"
     
 app.config["MONGO_URI"] = MONGO_URI
 
-# Upload folder: Use local folder if Azure Storage not configured
-app.config['UPLOAD_FOLDER'] = 'uploads' if not azure_storage.is_configured() else None
+# Upload folder: Use local folder if Azure Storage not configured or not in Azure environment
+app.config['UPLOAD_FOLDER'] = 'uploads' if (not azure_config.AzureEnvironment or not azure_storage.is_configured()) else None
 app.config['MAX_CONTENT_LENGTH'] = azure_config.MAX_CONTENT_LENGTH
 
 # Create upload directory if not using Azure Storage
@@ -35,11 +46,34 @@ if app.config['UPLOAD_FOLDER']:
 mongo = PyMongo(app)
 
 # --- CORS Configuration ---
-# Enable Cross-Origin Resource Sharing to allow the Vue.js frontend to communicate with this API
-CORS(app, origins=azure_config.CORS_ORIGINS)
-
-# --- SocketIO Configuration ---
-socketio = SocketIO(app, cors_allowed_origins=azure_config.CORS_ORIGINS, async_mode='threading')
+if not azure_config.AzureEnvironment:
+    # Local development: Allow all origins for CORS and Socket.IO
+    CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"], "allow_headers": "*"}}, supports_credentials=True)
+    socketio = SocketIO(
+        app, 
+        cors_allowed_origins=[],  # Empty list allows all origins
+        async_mode='threading', 
+        logger=True, 
+        engineio_logger=True,
+        allow_upgrades=True,
+        transports=['websocket', 'polling'],
+        ping_timeout=60,
+        ping_interval=25
+    )
+    print("Running in LOCAL DEVELOPMENT mode - CORS and Socket.IO allow all origins")
+else:
+    # Azure environment: Use configured origins
+    cors_origins_list = azure_config.CORS_ORIGINS if isinstance(azure_config.CORS_ORIGINS, list) else azure_config.CORS_ORIGINS.split(',')
+    
+    if '*' in cors_origins_list or len(cors_origins_list) == 1 and cors_origins_list[0] == '*':
+        # Allow all origins
+        CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"], "allow_headers": "*"}}, supports_credentials=True)
+        socketio = SocketIO(app, cors_allowed_origins=[], async_mode='threading')
+    else:
+        # Use specific origins
+        CORS(app, origins=cors_origins_list, supports_credentials=True)
+        socketio = SocketIO(app, cors_allowed_origins=cors_origins_list, async_mode='threading')
+    print(f"Running in AZURE environment - CORS origins: {cors_origins_list}")
 
 # Define the 'tasks' collection from MongoDB
 tasks_collection = mongo.db.tasks
