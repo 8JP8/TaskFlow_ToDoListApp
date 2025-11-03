@@ -537,21 +537,26 @@ const filteredTasks = computed(() => {
 const updateMetaTags = () => {
   const appTitle = 'TaskFlow - Real-Time Collaborative Task Management';
   const appDescription = 'A secure, multi-storage task management application with real-time synchronization. Create, edit, and collaborate on tasks across devices without login.';
-  const appImage = 'https://raw.githubusercontent.com/claudeai/assets/main/taskflow-preview.png'; // Ou usa o teu próprio link
-  const appUrl = window.location.href;
+  const appImage = 'https://taskflow.pt/preview.png'; // Coloca a imagem no /public/preview.png
+  const appUrl = 'https://taskflow.pt/';
   
   // Basic Meta Tags
   document.title = appTitle;
   
-  // Open Graph (Facebook, LinkedIn)
+  // Open Graph (Facebook, LinkedIn, WhatsApp)
+  updateOrCreateMeta('og:type', 'website');
+  updateOrCreateMeta('og:url', appUrl);
   updateOrCreateMeta('og:title', appTitle);
   updateOrCreateMeta('og:description', appDescription);
   updateOrCreateMeta('og:image', appImage);
-  updateOrCreateMeta('og:url', appUrl);
-  updateOrCreateMeta('og:type', 'website');
+  updateOrCreateMeta('og:image:width', '1200');
+  updateOrCreateMeta('og:image:height', '630');
+  updateOrCreateMeta('og:image:alt', 'TaskFlow - Task Management Application');
+  updateOrCreateMeta('og:site_name', 'TaskFlow');
   
   // Twitter
   updateOrCreateMeta('twitter:card', 'summary_large_image');
+  updateOrCreateMeta('twitter:url', appUrl);
   updateOrCreateMeta('twitter:title', appTitle);
   updateOrCreateMeta('twitter:description', appDescription);
   updateOrCreateMeta('twitter:image', appImage);
