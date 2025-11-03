@@ -6,8 +6,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1.0">
     
     <!-- Primary Meta Tags -->
-    <title>TaskFlow - Real-Time Collaborative Task Management</title>
-    <meta name="title" content="TaskFlow - Real-Time Collaborative Task Management">
+    <title><%= htmlWebpackPlugin.options.title %></title>
     <meta name="description" content="A secure, multi-storage task management application with real-time synchronization. Create, edit, and collaborate on tasks across devices without login.">
     <meta name="keywords" content="task management, real-time collaboration, notes, productivity, todo list">
     <meta name="author" content="João Oliveira">
@@ -29,14 +28,10 @@
     <meta property="twitter:title" content="TaskFlow - Real-Time Collaborative Task Management">
     <meta property="twitter:description" content="A secure, multi-storage task management application with real-time synchronization. Create, edit, and collaborate on tasks across devices without login.">
     <meta property="twitter:image" content="https://taskflow.pt/preview.png">
-    
-    <!-- Favicon -->
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%233b82f6'/><path d='M30 50 L45 65 L70 35' stroke='white' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-    <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%233b82f6'/><path d='M30 50 L45 65 L70 35' stroke='white' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
   </head>
   <body>
     <noscript>
-      <strong>We're sorry but TaskFlow doesn't work properly without JavaScript enabled. Please enable it to continue.</strong>
+      <strong>We're sorry but <%= htmlWebpackPlugin.options.title %> doesn't work properly without JavaScript enabled. Please enable it to continue.</strong>
     </noscript>
     <div id="app"></div>
     <!-- built files will be auto injected -->
