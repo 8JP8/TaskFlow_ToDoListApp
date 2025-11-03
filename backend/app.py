@@ -703,22 +703,33 @@ def upload_audio(task_id):
         
         # Upload audio file (Azure or local)
         unique_filename = f"audio_{uuid.uuid4()}.webm"
+        
+        print(f"🎤 Audio upload request:")
+        print(f"   📏 Audio size: {len(audio_bytes)} bytes")
+        print(f"   🔧 Azure Storage configured: {azure_storage.is_configured()}")
+        print(f"   🌍 Azure Environment: {azure_config.AzureEnvironment}")
+        
         if azure_storage.is_configured():
+            print(f"   ☁️ Using Azure Storage for audio upload")
             from io import BytesIO
             audio_file = BytesIO(audio_bytes)
             audio_file.name = unique_filename
             upload_result = azure_storage.upload_file(audio_file, filename=unique_filename)
             if not upload_result:
+                print(f"❌ Azure Storage audio upload returned None")
                 return jsonify({'error': 'Failed to upload audio to Azure Storage'}), 500
+            print(f"   ✅ Audio upload result received: {upload_result.get('unique_filename')}")
             audio_info = {
                 '_id': str(uuid.uuid4()),
-                'filename': unique_filename,
+                'filename': upload_result.get('filename', unique_filename),
                 'unique_filename': upload_result.get('unique_filename'),
                 'blob_url': upload_result.get('blob_url'),
                 'duration': duration,
                 'recorded_at': datetime.utcnow().isoformat(),
                 'size': len(audio_bytes)
             }
+            print(f"   📋 Audio info saved to DB: filename={audio_info['filename']}, unique_filename={audio_info['unique_filename']}")
+            print(f"   🔗 Blob URL: {audio_info['blob_url']}")
         else:
             # Local file storage
             upload_folder = app.config.get('UPLOAD_FOLDER', 'uploads')
