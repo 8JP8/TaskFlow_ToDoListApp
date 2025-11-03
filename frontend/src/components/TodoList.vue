@@ -513,6 +513,69 @@ import {
   InformationCircleIcon, KeyIcon, LinkIcon, CircleStackIcon, ArrowPathIcon, UsersIcon
 } from '@heroicons/vue/24/outline';
 
+// --- SEO & Social Media Meta Tags ---
+const updateMetaTags = () => {
+  const appTitle = 'TaskFlow - Real-Time Collaborative Task Management';
+  const appDescription = 'A secure, multi-storage task management application with real-time synchronization. Create, edit, and collaborate on tasks across devices without login.';
+  const appImage = 'https://i.postimg.cc/kXhw6b31/image.png';
+  const appUrl = window.location.href;
+  
+  // Basic Meta Tags
+  document.title = appTitle;
+  
+  // Open Graph (Facebook, LinkedIn)
+  updateOrCreateMeta('og:title', appTitle);
+  updateOrCreateMeta('og:description', appDescription);
+  updateOrCreateMeta('og:image', appImage);
+  updateOrCreateMeta('og:url', appUrl);
+  updateOrCreateMeta('og:type', 'website');
+  
+  // Twitter
+  updateOrCreateMeta('twitter:card', 'summary_large_image');
+  updateOrCreateMeta('twitter:title', appTitle);
+  updateOrCreateMeta('twitter:description', appDescription);
+  updateOrCreateMeta('twitter:image', appImage);
+  
+  // Standard Meta
+  updateOrCreateMeta('description', appDescription, 'name');
+  updateOrCreateMeta('keywords', 'task management, real-time collaboration, notes, productivity, todo list', 'name');
+  updateOrCreateMeta('author', 'João Oliveira', 'name');
+  
+  // Favicon
+  updateFavicon();
+};
+
+const updateOrCreateMeta = (property, content, attribute = 'property') => {
+  let meta = document.querySelector(`meta[${attribute}="${property}"]`);
+  if (!meta) {
+    meta = document.createElement('meta');
+    meta.setAttribute(attribute, property);
+    document.head.appendChild(meta);
+  }
+  meta.setAttribute('content', content);
+};
+
+const updateFavicon = () => {
+  // Remove existing favicons
+  const existingLinks = document.querySelectorAll('link[rel*="icon"]');
+  existingLinks.forEach(link => link.remove());
+  
+  // SVG Favicon (inline checkmark icon)
+  const svgFavicon = `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%233b82f6'/><path d='M30 50 L45 65 L70 35' stroke='white' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>`;
+  
+  const link = document.createElement('link');
+  link.rel = 'icon';
+  link.type = 'image/svg+xml';
+  link.href = svgFavicon;
+  document.head.appendChild(link);
+  
+  // Apple Touch Icon (larger checkmark)
+  const appleTouchIcon = document.createElement('link');
+  appleTouchIcon.rel = 'apple-touch-icon';
+  appleTouchIcon.href = svgFavicon;
+  document.head.appendChild(appleTouchIcon);
+};
+
 // --- STATE MANAGEMENT ---
 const tasks = ref([]);
 const newTaskTitle = ref('');
@@ -2461,8 +2524,8 @@ const handleVisibilityChange = () => {
 };
 
 onMounted(async () => {
-  // --- ADDED: Set the browser tab title ---
-  document.title = 'TaskFlow';
+  // --- SEO & Social Media Meta Tags ---
+  updateMetaTags();
   
   // Initialize storage ID
   _s1d.value = storageManager.getStorageId();
