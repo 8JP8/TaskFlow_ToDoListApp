@@ -2590,15 +2590,21 @@ const fetchOnlineCount = async () => {
   }
 };
 
+// Handler for online count updates
+const handleStorageOnlineCount = (data) => {
+  console.log('DEBUG: handleStorageOnlineCount called with:', data);
+  if (data?.storage_id === _s1d.value) {
+    console.log('DEBUG: Updating online count to:', data.count);
+    onlineCount.value = Number(data.count || 0);
+  }
+};
+
 // Listen to socket event that broadcasts online counts
 const setupOnlineCountListener = () => {
-  if (!realtimeSync || !realtimeSync.socket) return;
-  realtimeSync.socket.off?.('storage_online_count');
-  realtimeSync.socket.on('storage_online_count', (data) => {
-    if (data?.storage_id === _s1d.value) {
-      onlineCount.value = Number(data.count || 0);
-    }
-  });
+  if (!realtimeSync) return;
+  // Use the realtime-sync callback instead of direct socket access
+  realtimeSync.setCallback('onStorageOnlineCount', handleStorageOnlineCount);
+  console.log('DEBUG: Online count listener setup complete');
 };
 
 </script>

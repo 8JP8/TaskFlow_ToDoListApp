@@ -156,6 +156,7 @@ sid_to_storages = {}
 def update_and_broadcast_online_count(storage_id: str):
     room = f'storage_{storage_id}'
     count = len(storage_connections.get(storage_id, set()))
+    print(f"📊 Broadcasting online count for storage {storage_id[:8]}...: {count} users")
     socketio.emit('storage_online_count', {'storage_id': storage_id, 'count': count}, room=room)
 
 def serialize_document(doc):
@@ -271,10 +272,12 @@ def on_disconnect():
 def on_join_storage(data):
     storage_id = data.get('storage_id')
     if storage_id:
+        print(f"🔌 Client {request.sid} joining storage room: {storage_id[:8]}...")
         join_room(f'storage_{storage_id}')
         sid = request.sid
         storage_connections.setdefault(storage_id,set()).add(sid)
         sid_to_storages.setdefault(sid,set()).add(storage_id)
+        print(f"📊 Storage {storage_id[:8]}... now has {len(storage_connections[storage_id])} connection(s)")
         update_and_broadcast_online_count(storage_id)
         emit('joined_storage', {'storage_id': storage_id})
 @socketio.on('leave_storage')
@@ -338,6 +341,7 @@ def create_task():
         task_data['_id'] = str(result.inserted_id)
         
         # Emit Socket.IO event for real-time sync
+        print(f"📤 Emitting task_created event to room storage_{storage_id[:8]}...")
         socketio.emit('task_created', {
             'task': serialize_document(task_data),
             'storage_id': storage_id
@@ -380,6 +384,7 @@ def update_task(task_id):
         
         # Emit Socket.IO event for real-time sync
         update_type = 'completed' if 'completed' in data else 'updated'
+        print(f"📤 Emitting task_updated event (type: {update_type}) to room storage_{storage_id[:8]}...")
         socketio.emit('task_updated', {
             'task': serialize_document(updated_task),
             'storage_id': storage_id,
@@ -409,6 +414,7 @@ def delete_task(task_id):
         tasks_collection.delete_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
         
         # Emit Socket.IO event for real-time sync
+        print(f"📤 Emitting task_deleted event to room storage_{storage_id[:8]}...")
         socketio.emit('task_deleted', {
             'task_id': task_id,
             'storage_id': storage_id

@@ -17,7 +17,8 @@ class RealtimeSync {
       onTaskUpdated: null,
       onTaskDeleted: null,
       onUserActivity: null,
-      onConnectionChange: null
+      onConnectionChange: null,
+      onStorageOnlineCount: null
     };
   }
 
@@ -131,6 +132,19 @@ class RealtimeSync {
     this.socket.on('user_activity_update', (data) => {
       if (data.user_id !== this.userId) {
         this.callbacks.onUserActivity?.(data);
+      }
+    });
+
+    this.socket.on('storage_online_count', (data) => {
+      console.log('DEBUG: Received storage_online_count event');
+      console.log('DEBUG: Event storage_id:', data.storage_id);
+      console.log('DEBUG: Current _s1d:', this._s1d);
+      console.log('DEBUG: Count:', data.count);
+      if (data.storage_id === this._s1d) {
+        console.log('DEBUG: Calling onStorageOnlineCount callback');
+        this.callbacks.onStorageOnlineCount?.(data);
+      } else {
+        console.log('DEBUG: Ignoring storage_online_count for different storage');
       }
     });
 
