@@ -249,7 +249,10 @@
                     <div v-if="task.attachments?.length" class="media-list">
                       <h4>{{ t('attachments') }}</h4>
                       <div v-for="file in task.attachments" :key="file._id" class="media-item">
-                        <div class="media-info"><DocumentIcon/><span>{{ file.filename }}</span></div>
+                        <div class="media-info">
+                          <DocumentIcon/>
+                          <span class="filename-display" :title="file.filename">{{ truncateFilename(file.filename) }}</span>
+                        </div>
                         <div class="media-actions">
                           <button @click="downloadFile(file)" class="btn btn-success"><ArrowDownTrayIcon/></button>
                           <button @click="deleteAttachment(task._id, file._id || file.unique_filename)" class="btn btn-danger"><TrashIcon/></button>
@@ -1587,6 +1590,62 @@ const formatDuration = (seconds) => {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 };
 
+const truncateFilename = (filename) => {
+  if (!filename) return '';
+  const maxLength = 40; // Fixed character limit
+  const lastDotIndex = filename.lastIndexOf('.');
+  
+  if (lastDotIndex === -1) {
+    // No extension, just truncate the whole thing
+    return filename.length > (maxLength - 7) ? filename.substring(0, maxLength) + '...' : filename;
+  }
+  
+  const name = filename.substring(0, lastDotIndex);
+  const extension = filename.substring(lastDotIndex);
+  
+  if (name.length <= maxLength) {
+    return filename; // No truncation needed
+  }
+  
+  // Truncate name part, keep extension
+  return name.substring(0, maxLength) + '...' + extension;
+};
+
+const truncateFilenameByWidth = (filename, maxWidth = 200, font = '14px Arial') => {
+  if (!filename) return '';
+
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.font = font;
+
+  const ellipsis = '... ';
+  const ellipsisWidth = ctx.measureText(ellipsis).width;
+
+  const lastDotIndex = filename.lastIndexOf('.');
+  const name = lastDotIndex !== -1 ? filename.substring(0, lastDotIndex) : filename;
+  const extension = lastDotIndex !== -1 ? filename.substring(lastDotIndex) : '';
+
+  // If the full filename fits, return it
+  if (ctx.measureText(filename).width <= maxWidth) {
+    return filename;
+  }
+
+  // If not, truncate progressively until it fits
+  let truncated = name;
+  while (truncated.length > 0) {
+    const testString = truncated + ellipsis + extension;
+    const width = ctx.measureText(testString).width;
+    if (width <= maxWidth) {
+      return testString;
+    }
+    truncated = truncated.slice(0, -1);
+  }
+
+  // Fallback (if even ellipsis+extension too wide)
+  return ellipsis + extension;
+};
+
+
 // --- DESCRIPTION FORMATTING ---
 const formatDescription = (description) => {
   if (!description) return '';
@@ -2857,11 +2916,15 @@ svg { width: 1.25rem; height: 1.25rem; }
 .media-lists { display: grid; gap: var(--space-4); }
 .media-list h4 { margin-bottom: var(--space-2); font-size: 1rem; }
 .media-item {
-    display: flex; justify-content: space-between; align-items: center;
+    display: flex; 
+    justify-content: space-between; 
+    align-items: center;
     background-color: var(--bg-tertiary);
     padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-md);
     overflow: hidden;
+    width: 100%;
+    max-width: 100%;
 }
 .media-info {
     display: flex;
@@ -2870,11 +2933,33 @@ svg { width: 1.25rem; height: 1.25rem; }
     font-size: 0.9rem;
     overflow: hidden;
     min-width: 0;
+    flex: 1;
+    max-width: 100%;
 }
-.media-info span {
-    white-space: nowrap;
+
+.filename-text {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+    flex: 1;
+    min-width: 0;
+}
+
+.filename-name {
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 100%;
+}
+
+.filename-extension {
+    flex-shrink: 0;
+    flex-grow: 0;
+    white-space: nowrap;
 }
 .audio-duration { font-style: italic; color: var(--text-secondary); }
 .media-actions { display: flex; gap: var(--space-2); flex-shrink: 0; }
@@ -3030,7 +3115,7 @@ svg { width: 1.25rem; height: 1.25rem; }
 .warning-content p, .security-warning p { margin: 0; font-size: 0.9rem; color: var(--warning); line-height: 1.6; font-weight: 500; }
 [data-theme="dark"] .storage-warning .warning-icon, [data-theme="dark"] .warning-content p, [data-theme="dark"] .security-warning .warning-icon, [data-theme="dark"] .security-warning p { color: #ffffff; }
 
-.storage-actions { display: flex; justify-content: center; margin-bottom: var(--space-2); }
+.storage-actions { display: flex; justify-content: center; margin-top: var(--space-6); margin-bottom: var(--space-2); }
 .copy-btn { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-6); font-size: 1rem; font-weight: 500; }
 
 .generated-id-section { margin-top: var(--space-6); padding-top: var(--space-4); border-top: 1px solid var(--border-color); }
@@ -3045,12 +3130,12 @@ svg { width: 1.25rem; height: 1.25rem; }
 .external-id-section .input-group label { font-weight: 500; color: var(--text-primary); }
 .input-with-icon { position: relative; display: flex; align-items: center; }
 .input-with-icon .input-icon { position: absolute; left: var(--space-3); width: 1.25rem; height: 1.25rem; color: var(--text-secondary); z-index: 1; pointer-events: none; }
-.external-id-input { font-family: 'Courier New', monospace; font-size: 1rem; text-align: center; letter-spacing: 0.1em; padding-left: 3rem; }
+.external-id-input { font-family: 'Courier New', monospace; font-size: 1rem; text-align: center; margin-top: (var(--space-2)); letter-spacing: 0.1em; padding-left: 3rem; }
 .external-id-info { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-4); background-color: var(--info-light); border: 1px solid var(--info); border-radius: var(--radius-md); }
 .info-icon { width: 1.25rem; height: 1.25rem; color: var(--info); flex-shrink: 0; margin-top: 2px; }
 .external-id-info p { margin: 0; font-size: 0.875rem; color: var(--info); line-height: 1.4; font-weight: 500; }
 [data-theme="dark"] .external-id-info .info-icon, [data-theme="dark"] .external-id-info p { color: #ffffff; }
-.external-id-actions { display: flex; justify-content: center; }
+.external-id-actions { display: flex; justify-content: center; margin-top: var(--space-6); }
 .external-id-actions .btn { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-6); font-size: 1rem; }
 .link-icon { width: 1.25rem; height: 1.25rem; }
 
