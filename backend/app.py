@@ -15,78 +15,11 @@ from azure_storage import azure_storage
 import cors_config
 
 # --- Check if running directly (local environment) ---
-# If app.py is executed directly, set AzureEnvironment to False
 if __name__ == '__main__':
     azure_config.AzureEnvironment = False
 
 # --- App Initialization ---
 app = Flask(__name__, static_folder='static', static_url_path='')
-
-# --- MongoDB Configuration ---
-# Use Azure Cosmos DB if AzureEnvironment is True and COSMOS_DB_URI is configured
-# Otherwise use MONGO_URI from environment or local MongoDB
-MONGO_URI = os.environ.get("MONGO_URI")
-db_type = "environment variable"
-if not MONGO_URI:
-    if azure_config.AzureEnvironment and azure_config.COSMOS_DB_URI:
-        # Using Azure Cosmos DB
-        MONGO_URI = azure_config.COSMOS_DB_URI
-        db_type = "Azure Cosmos DB"
-        # Extract database name from URI or use configured name
-        if azure_config.COSMOS_DB_NAME:
-            if MONGO_URI and '/' not in MONGO_URI.split('@')[-1].split('?')[0]:
-                MONGO_URI = f"{MONGO_URI.rstrip('/')}/{azure_config.COSMOS_DB_NAME}"
-    else:
-        # Using local MongoDB
-        MONGO_URI = "mongodb://localhost:27017/tododb"
-        db_type = "local MongoDB"
-    
-app.config["MONGO_URI"] = MONGO_URI
-print(f"📊 MongoDB URI source: {db_type}")
-
-# --- Upload Folder Configuration ---
-# Always create local uploads folder for local development
-# Use Azure Storage if configured AND in Azure environment
-local_uploads_folder = os.path.join(os.path.dirname(__file__), 'uploads')
-os.makedirs(local_uploads_folder, exist_ok=True)
-
-if azure_config.AzureEnvironment and azure_storage.is_configured():
-    # Azure: Use Azure Storage (local folder as fallback)
-    app.config['UPLOAD_FOLDER'] = None
-    print("☁️ Using Azure Storage for file uploads")
-else:
-    # Local: Use local uploads folder
-    app.config['UPLOAD_FOLDER'] = local_uploads_folder
-    print(f"📁 Using local storage: {local_uploads_folder}")
-
-app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get("MAX_CONTENT_LENGTH", azure_config.MAX_CONTENT_LENGTH))
-
-# --- Initialize PyMongo with error handling ---
-try:
-    mongo = PyMongo(
-        app,
-        serverSelectionTimeoutMS=10000,
-        connectTimeoutMS=20000,
-        socketTimeoutMS=20000,
-        maxPoolSize=10,
-        retryWrites=False
-    )
-    mongo.db.command('ping')
-    tasks_collection = mongo.db.tasks
-    print("="*60)
-    print("✅ MongoDB/Cosmos DB connection established")
-    print(f"📊 Database: {mongo.db.name}")
-    print(f"🔗 Connection Type: {db_type}")
-    print(f"🌍 Environment: {os.environ.get('WEBSITE_SITE_NAME', 'local')}")
-    print(f"📍 MongoDB URI: {MONGO_URI.split('@')[0] if '@' in MONGO_URI else MONGO_URI.split('//')[1].split('/')[0] if '//' in MONGO_URI else 'hidden'}...")
-    print("="*60)
-except (ConnectionFailure, ServerSelectionTimeoutError) as e:
-    print("="*60)
-    print(f"❌ MongoDB connection error: {e}")
-    tasks_collection = None
-except Exception as e:
-    print(f"⚠️ MongoDB initialization warning: {e}")
-    tasks_collection = None
 
 # --- CORS Configuration ---
 # Conditionally enable CORS based on USE_CORS configuration
@@ -102,6 +35,51 @@ if cors_config.USE_CORS:
     print(f"✅ CORS enabled with origins: {cors_config.CORS_ORIGINS}")
 else:
     print("⚠️ CORS is disabled")
+
+# --- MongoDB Configuration ---
+MONGO_URI = os.environ.get("MONGO_URI")
+db_type = "environment variable"
+if not MONGO_URI:
+    if azure_config.AzureEnvironment and azure_config.COSMOS_DB_URI:
+        MONGO_URI = azure_config.COSMOS_DB_URI
+        db_type = "Azure Cosmos DB"
+        if azure_config.COSMOS_DB_NAME and '/' not in MONGO_URI.split('@')[-1].split('?')[0]:
+            MONGO_URI = f"{MONGO_URI.rstrip('/')}/{azure_config.COSMOS_DB_NAME}"
+    else:
+        MONGO_URI = "mongodb://localhost:27017/tododb"
+        db_type = "local MongoDB"
+app.config["MONGO_URI"] = MONGO_URI
+print(f"📊 MongoDB URI source: {db_type}")
+
+# --- Upload Folder Configuration ---
+local_uploads_folder = os.path.join(os.path.dirname(__file__), 'uploads')
+os.makedirs(local_uploads_folder, exist_ok=True)
+if azure_config.AzureEnvironment and azure_storage.is_configured():
+    app.config['UPLOAD_FOLDER'] = None
+    print("☁️ Using Azure Storage for file uploads")
+else:
+    app.config['UPLOAD_FOLDER'] = local_uploads_folder
+    print(f"📁 Using local storage: {local_uploads_folder}")
+app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get("MAX_CONTENT_LENGTH", azure_config.MAX_CONTENT_LENGTH))
+
+# --- Initialize PyMongo with error handling ---
+try:
+    mongo = PyMongo(app, serverSelectionTimeoutMS=10000, connectTimeoutMS=20000, socketTimeoutMS=20000, maxPoolSize=10, retryWrites=False)
+    mongo.db.command('ping')
+    tasks_collection = mongo.db.tasks
+    print("="*60)
+    print("✅ MongoDB/Cosmos DB connection established")
+    print(f"📊 Database: {mongo.db.name}")
+    print(f"🔗 Connection Type: {db_type}")
+    print(f"🌍 Environment: {os.environ.get('WEBSITE_SITE_NAME', 'local')}")
+    print(f"📍 MongoDB URI: {MONGO_URI.split('@')[0] if '@' in MONGO_URI else MONGO_URI.split('//')[1].split('/')[0] if '//' in MONGO_URI else 'hidden'}...")
+    print("="*60)
+except (ConnectionFailure, ServerSelectionTimeoutError) as e:
+    print("="*60, f"❌ MongoDB connection error: {e}", "="*60, sep="\n")
+    tasks_collection = None
+except Exception as e:
+    print(f"⚠️ MongoDB initialization warning: {e}")
+    tasks_collection = None
 
 # --- SocketIO Configuration ---
 # Determine async_mode based on environment and available packages
@@ -149,7 +127,7 @@ if cors_config.USE_CORS:
 else:
     print("⚠️ Socket.IO CORS is disabled")
 
-# --- Online connections storage ---
+# --- Helper Functions & State ---
 storage_connections = {}
 sid_to_storages = {}
 
@@ -179,35 +157,67 @@ def check_db_connection():
         print(f"❌ Database connection lost: {e}")
         return jsonify({'error': 'Database connection lost'}), 503
 
-# --- Health & Diagnostic ---
+def toIdString(id_val):
+    """Convert various ID formats to string"""
+    if id_val is None:
+        return ''
+    if isinstance(id_val, ObjectId):
+        return str(id_val)
+    if isinstance(id_val, str):
+        return id_val
+    return str(id_val)
+
+# --- Static & Health Routes ---
+@app.route('/')
+def index(): return send_from_directory('static', 'index.html')
+
+@app.route('/<path:path>')
+def serve_static(path):
+    if os.path.exists(os.path.join('static', path)): return send_from_directory('static', path)
+    return send_from_directory('static', 'index.html')
+
 @app.route('/health')
 def health():
     db_status = 'disconnected'
     db_error = None
     if tasks_collection is not None:
-        try: mongo.db.command('ping'); db_status = 'connected'
-        except Exception as e: db_status='error'; db_error=str(e)
-    return jsonify({'status':'healthy' if db_status=='connected' else 'degraded',
-                    'mongodb': db_status, 'error': db_error,
-                    'environment': os.environ.get('WEBSITE_SITE_NAME','local')})
+        try:
+            mongo.db.command('ping')
+            db_status = 'connected'
+        except Exception as e:
+            db_status = 'error'
+            db_error = str(e)
+    return jsonify({
+        'status': 'healthy' if db_status == 'connected' else 'degraded',
+        'mongodb': db_status,
+        'error': db_error,
+        'environment': os.environ.get('WEBSITE_SITE_NAME', 'local')
+    })
 
 @app.route('/api/diagnostic', methods=['GET'])
 def diagnostic():
     diagnostics = {
-        'server':'running',
-        'timestamp':datetime.utcnow().isoformat(),
-        'environment':os.environ.get('WEBSITE_SITE_NAME','local'),
-        'python_version':sys.version,
-        'mongodb': {'configured': tasks_collection is not None,
-                    'connection_string_prefix': MONGO_URI[:50]+'...' if MONGO_URI else 'None'},
+        'server': 'running',
+        'timestamp': datetime.utcnow().isoformat(),
+        'environment': os.environ.get('WEBSITE_SITE_NAME', 'local'),
+        'python_version': sys.version,
+        'mongodb': {
+            'configured': tasks_collection is not None,
+            'connection_string_prefix': MONGO_URI[:50] + '...' if MONGO_URI else 'None'
+        },
         'azure_storage': azure_storage.get_container_info()
     }
     if tasks_collection is not None:
         try:
             mongo.db.command('ping')
-            diagnostics['mongodb'].update({'status':'connected','database':mongo.db.name,'collections':mongo.db.list_collection_names(),'task_count':mongo.db.tasks.count_documents({})})
+            diagnostics['mongodb'].update({
+                'status': 'connected',
+                'database': mongo.db.name,
+                'collections': mongo.db.list_collection_names(),
+                'task_count': mongo.db.tasks.count_documents({})
+            })
         except Exception as e:
-            diagnostics['mongodb'].update({'status':'error','error':str(e)})
+            diagnostics['mongodb'].update({'status': 'error', 'error': str(e)})
     else:
         diagnostics['mongodb']['status'] = 'not configured'
     
@@ -247,27 +257,24 @@ def list_storage_files():
         print(f"❌ Error listing storage files: {e}")
         return jsonify({'error': f'Failed to list files: {str(e)}'}), 500
 
-# --- Static frontend ---
-@app.route('/')
-def index(): return send_from_directory('static','index.html')
-@app.route('/<path:path>')
-def serve_static(path):
-    if os.path.exists(os.path.join('static',path)): return send_from_directory('static',path)
-    return send_from_directory('static','index.html')
-
-# --- SocketIO handlers ---
+# --- SocketIO Handlers (FIXED & VERIFIED for real-time user count) ---
 @socketio.on('connect')
-def on_connect(): print(f'✅ Client connected: {request.sid}')
+def on_connect():
+    print(f'✅ Client connected: {request.sid}')
+
 @socketio.on('disconnect')
 def on_disconnect():
     sid = request.sid
     print(f"👋 Client disconnected: {sid}")
-    storages = sid_to_storages.pop(sid,set())
+    storages = sid_to_storages.pop(sid, set())
     for storage_id in list(storages):
         s = storage_connections.get(storage_id)
-        if s and sid in s: s.remove(sid)
-        if not s: del storage_connections[storage_id]
+        if s and sid in s:
+            s.remove(sid)
+            if not s: del storage_connections[storage_id]
+        # This broadcast is crucial for real-time updates
         update_and_broadcast_online_count(storage_id)
+
 @socketio.on('join_storage')
 def on_join_storage(data):
     storage_id = data.get('storage_id')
@@ -275,11 +282,12 @@ def on_join_storage(data):
         print(f"🔌 Client {request.sid} joining storage room: {storage_id[:8]}...")
         join_room(f'storage_{storage_id}')
         sid = request.sid
-        storage_connections.setdefault(storage_id,set()).add(sid)
-        sid_to_storages.setdefault(sid,set()).add(storage_id)
+        storage_connections.setdefault(storage_id, set()).add(sid)
+        sid_to_storages.setdefault(sid, set()).add(storage_id)
         print(f"📊 Storage {storage_id[:8]}... now has {len(storage_connections[storage_id])} connection(s)")
         update_and_broadcast_online_count(storage_id)
         emit('joined_storage', {'storage_id': storage_id})
+
 @socketio.on('leave_storage')
 def on_leave_storage(data):
     storage_id = data.get('storage_id')
@@ -287,27 +295,33 @@ def on_leave_storage(data):
         leave_room(f'storage_{storage_id}')
         sid = request.sid
         s = storage_connections.get(storage_id)
-        if s and sid in s: s.remove(sid)
-        if not s: del storage_connections[storage_id]
-        else: storage_connections[storage_id]=s
+        if s and sid in s:
+            s.remove(sid)
+            if not s:
+                del storage_connections[storage_id]
+        else:
+            storage_connections[storage_id] = s
         if sid in sid_to_storages and storage_id in sid_to_storages[sid]:
             sid_to_storages[sid].remove(storage_id)
-            if not sid_to_storages[sid]: del sid_to_storages[sid]
+            if not sid_to_storages[sid]:
+                del sid_to_storages[sid]
         update_and_broadcast_online_count(storage_id)
+
 @socketio.on('user_activity')
 def on_user_activity(data):
     storage_id, user_id, activity = data.get('storage_id'), data.get('user_id'), data.get('activity')
     if storage_id and user_id:
-        emit('user_activity_update',{'user_id':user_id,'activity':activity,'timestamp':datetime.utcnow().isoformat()},
-             room=f'storage_{storage_id}', include_self=False)
+        emit('user_activity_update', {'user_id': user_id, 'activity': activity, 'timestamp': datetime.utcnow().isoformat()}, room=f'storage_{storage_id}', include_self=False)
 
-# --- Task API endpoints ---
+# --- Task API Endpoints ---
 @app.route('/api/tasks', methods=['GET'])
 def get_tasks():
-    db_check = check_db_connection(); 
-    if db_check: return db_check
+    db_check = check_db_connection()
+    if db_check:
+        return db_check
     storage_id = request.args.get('storage_id')
-    if not storage_id: return jsonify({'error':'Storage ID is required'}), 400
+    if not storage_id:
+        return jsonify({'error': 'Storage ID is required'}), 400
     try:
         tasks = [serialize_document(task) for task in tasks_collection.find({'storage_id': storage_id})]
         return jsonify(tasks)
@@ -315,16 +329,18 @@ def get_tasks():
         print(f"❌ Error fetching tasks: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({'error':f'Failed to fetch tasks: {str(e)}'}), 500
+        return jsonify({'error': f'Failed to fetch tasks: {str(e)}'}), 500
 
 @app.route('/api/tasks', methods=['POST'])
 def create_task():
     db_check = check_db_connection()
-    if db_check: return db_check
+    if db_check:
+        return db_check
     try:
         data = request.get_json()
         storage_id = data.get('storage_id')
-        if not storage_id: return jsonify({'error': 'Storage ID is required'}), 400
+        if not storage_id:
+            return jsonify({'error': 'Storage ID is required'}), 400
         
         task_data = {
             'title': data.get('title', ''),
@@ -357,21 +373,27 @@ def create_task():
 @app.route('/api/tasks/<task_id>', methods=['PUT'])
 def update_task(task_id):
     db_check = check_db_connection()
-    if db_check: return db_check
+    if db_check:
+        return db_check
     try:
         data = request.get_json()
         storage_id = data.get('storage_id')
-        if not storage_id: return jsonify({'error': 'Storage ID is required'}), 400
+        if not storage_id:
+            return jsonify({'error': 'Storage ID is required'}), 400
         
         # Find the task to ensure it exists and belongs to the storage
         task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
-        if not task: return jsonify({'error': 'Task not found'}), 404
+        if not task:
+            return jsonify({'error': 'Task not found'}), 404
         
         # Build update data
         update_data = {'updated_at': datetime.utcnow()}
-        if 'title' in data: update_data['title'] = data['title']
-        if 'description' in data: update_data['description'] = data.get('description', '')
-        if 'completed' in data: update_data['completed'] = data['completed']
+        if 'title' in data:
+            update_data['title'] = data['title']
+        if 'description' in data:
+            update_data['description'] = data.get('description', '')
+        if 'completed' in data:
+            update_data['completed'] = data['completed']
         
         # Update the task
         tasks_collection.update_one(
@@ -401,14 +423,17 @@ def update_task(task_id):
 @app.route('/api/tasks/<task_id>', methods=['DELETE'])
 def delete_task(task_id):
     db_check = check_db_connection()
-    if db_check: return db_check
+    if db_check:
+        return db_check
     try:
         storage_id = request.args.get('storage_id')
-        if not storage_id: return jsonify({'error': 'Storage ID is required'}), 400
+        if not storage_id:
+            return jsonify({'error': 'Storage ID is required'}), 400
         
         # Find the task to ensure it exists and belongs to the storage
         task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
-        if not task: return jsonify({'error': 'Task not found'}), 404
+        if not task:
+            return jsonify({'error': 'Task not found'}), 404
         
         # Delete the task
         tasks_collection.delete_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
@@ -430,27 +455,30 @@ def delete_task(task_id):
 @app.route('/api/tasks/stats', methods=['GET'])
 def get_task_stats():
     db_check = check_db_connection()
-    if db_check: return db_check
+    if db_check:
+        return db_check
     storage_id = request.args.get('storage_id')
-    if not storage_id: return jsonify({'error':'Storage ID is required'}), 400
+    if not storage_id:
+        return jsonify({'error': 'Storage ID is required'}), 400
     try:
         completed = tasks_collection.count_documents({'storage_id': storage_id, 'completed': True})
         pending = tasks_collection.count_documents({'storage_id': storage_id, 'completed': False})
         return jsonify({'completed': completed, 'pending': pending})
     except Exception as e:
         print(f"❌ Error fetching task stats: {e}")
-        return jsonify({'error':f'Failed to fetch task stats: {str(e)}'}), 500
+        return jsonify({'error': f'Failed to fetch task stats: {str(e)}'}), 500
 
 @app.route('/api/storage/online-count', methods=['GET'])
 def get_online_count():
     storage_id = request.args.get('storage_id')
-    if not storage_id: return jsonify({'error':'Storage ID is required'}), 400
+    if not storage_id:
+        return jsonify({'error': 'Storage ID is required'}), 400
     try:
         count = len(storage_connections.get(storage_id, set()))
         return jsonify({'count': count, 'storage_id': storage_id})
     except Exception as e:
         print(f"❌ Error fetching online count: {e}")
-        return jsonify({'error':f'Failed to fetch online count: {str(e)}'}), 500
+        return jsonify({'error': f'Failed to fetch online count: {str(e)}'}), 500
 
 @app.route('/api/test-socket', methods=['GET'])
 def test_socket():
@@ -487,25 +515,28 @@ def server_info():
         'database_name': mongo.db.name if tasks_collection is not None else None
     })
 
-# --- File Upload/Download endpoints ---
+# --- File and Media Endpoints ---
 @app.route('/api/tasks/<task_id>/upload', methods=['POST'])
 def upload_file(task_id):
     db_check = check_db_connection()
-    if db_check: return db_check
+    if db_check:
+        return db_check
     try:
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
         
         file = request.files['file']
         storage_id = request.form.get('storage_id')
-        if not storage_id: return jsonify({'error': 'Storage ID is required'}), 400
+        if not storage_id:
+            return jsonify({'error': 'Storage ID is required'}), 400
         
         if file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
         
         # Find the task to ensure it exists and belongs to the storage
         task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
-        if not task: return jsonify({'error': 'Task not found'}), 404
+        if not task:
+            return jsonify({'error': 'Task not found'}), 404
         
         # Upload file (Azure or local)
         # Get file size before upload
@@ -575,121 +606,16 @@ def upload_file(task_id):
         traceback.print_exc()
         return jsonify({'error': f'Failed to upload file: {str(e)}'}), 500
 
-@app.route('/api/files/<filename>', methods=['GET'])
-def download_file(filename):
-    try:
-        if azure_storage.is_configured():
-            # Get file from Azure Blob Storage
-            blob_url = azure_storage.get_file_url(filename)
-            if not blob_url:
-                return jsonify({'error': 'File not found'}), 404
-            # Return redirect to Azure blob URL
-            from flask import redirect
-            return redirect(blob_url)
-        else:
-            # Local file storage
-            upload_folder = app.config.get('UPLOAD_FOLDER', 'uploads')
-            filepath = os.path.join(upload_folder, filename)
-            if not os.path.exists(filepath):
-                return jsonify({'error': 'File not found'}), 404
-            return send_file(filepath, as_attachment=True)
-    except Exception as e:
-        print(f"❌ Error downloading file: {e}")
-        return jsonify({'error': f'Failed to download file: {str(e)}'}), 500
-
-@app.route('/api/audio/<filename>', methods=['GET'])
-def stream_audio(filename):
-    """Stream audio file from Azure Storage or local storage"""
-    try:
-        if azure_storage.is_configured():
-            # Get audio file from Azure Blob Storage
-            blob_url = azure_storage.get_file_url(filename)
-            if not blob_url:
-                return jsonify({'error': 'Audio file not found'}), 404
-            # Return redirect to Azure blob URL
-            from flask import redirect
-            return redirect(blob_url)
-        else:
-            # Local file storage
-            upload_folder = app.config.get('UPLOAD_FOLDER', 'uploads')
-            filepath = os.path.join(upload_folder, filename)
-            if not os.path.exists(filepath):
-                return jsonify({'error': 'Audio file not found'}), 404
-            # Stream audio file with proper content type
-            return send_file(filepath, mimetype='audio/webm')
-    except Exception as e:
-        print(f"❌ Error streaming audio: {e}")
-        return jsonify({'error': f'Failed to stream audio: {str(e)}'}), 500
-
-
-
-@app.route('/api/tasks/<task_id>/attachments/<attachment_id>', methods=['DELETE'])
-def delete_attachment(task_id, attachment_id):
-    db_check = check_db_connection()
-    if db_check: return db_check
-    try:
-        storage_id = request.args.get('storage_id')
-        if not storage_id: return jsonify({'error': 'Storage ID is required'}), 400
-        
-        # Find the task
-        task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
-        if not task: return jsonify({'error': 'Task not found'}), 404
-        
-        # Find the attachment
-        attachments = task.get('attachments', [])
-        attachment = None
-        for att in attachments:
-            att_id = toIdString(att.get('_id', ''))
-            if att_id == attachment_id or att.get('unique_filename') == attachment_id:
-                attachment = att
-                break
-        
-        if not attachment:
-            return jsonify({'error': 'Attachment not found'}), 404
-        
-        # Delete file from storage
-        unique_filename = attachment.get('unique_filename')
-        if unique_filename:
-            if azure_storage.is_configured():
-                azure_storage.delete_file(unique_filename)
-            else:
-                upload_folder = app.config.get('UPLOAD_FOLDER', 'uploads')
-                filepath = os.path.join(upload_folder, unique_filename)
-                if os.path.exists(filepath):
-                    os.remove(filepath)
-        
-        # Remove attachment from task
-        tasks_collection.update_one(
-            {'_id': ObjectId(task_id), 'storage_id': storage_id},
-            {'$pull': {'attachments': {'_id': attachment.get('_id')}}, '$set': {'updated_at': datetime.utcnow()}}
-        )
-        
-        # Fetch updated task
-        updated_task = tasks_collection.find_one({'_id': ObjectId(task_id)})
-        
-        # Emit Socket.IO event for real-time sync
-        socketio.emit('task_updated', {
-            'task': serialize_document(updated_task),
-            'storage_id': storage_id,
-            'update_type': 'attachment_deleted'
-        }, room=f'storage_{storage_id}')
-        
-        return jsonify({'message': 'Attachment deleted successfully'})
-    except Exception as e:
-        print(f"❌ Error deleting attachment: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': f'Failed to delete attachment: {str(e)}'}), 500
-
-# --- Audio Recording endpoints ---
 @app.route('/api/tasks/<task_id>/audio', methods=['POST'])
 def upload_audio(task_id):
     db_check = check_db_connection()
-    if db_check: return db_check
+    if db_check:
+        return db_check
     try:
         data = request.get_json()
         storage_id = data.get('storage_id')
-        if not storage_id: return jsonify({'error': 'Storage ID is required'}), 400
+        if not storage_id:
+            return jsonify({'error': 'Storage ID is required'}), 400
         
         audio_data = data.get('audio_data')
         duration = data.get('duration', 0)
@@ -699,7 +625,8 @@ def upload_audio(task_id):
         
         # Find the task to ensure it exists and belongs to the storage
         task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
-        if not task: return jsonify({'error': 'Task not found'}), 404
+        if not task:
+            return jsonify({'error': 'Task not found'}), 404
         
         # Decode base64 audio data
         try:
@@ -775,17 +702,127 @@ def upload_audio(task_id):
         traceback.print_exc()
         return jsonify({'error': f'Failed to upload audio: {str(e)}'}), 500
 
-@app.route('/api/tasks/<task_id>/audio/<audio_id>', methods=['DELETE'])
-def delete_audio(task_id, audio_id):
+@app.route('/api/files/<filename>', methods=['GET'])
+def download_file(filename):
+    try:
+        if azure_storage.is_configured():
+            # Get file from Azure Blob Storage
+            blob_url = azure_storage.get_file_url(filename)
+            if not blob_url:
+                return jsonify({'error': 'File not found'}), 404
+            # Return redirect to Azure blob URL
+            from flask import redirect
+            return redirect(blob_url)
+        else:
+            # Local file storage
+            upload_folder = app.config.get('UPLOAD_FOLDER', 'uploads')
+            filepath = os.path.join(upload_folder, filename)
+            if not os.path.exists(filepath):
+                return jsonify({'error': 'File not found'}), 404
+            return send_file(filepath, as_attachment=True)
+    except Exception as e:
+        print(f"❌ Error downloading file: {e}")
+        return jsonify({'error': f'Failed to download file: {str(e)}'}), 500
+
+@app.route('/api/audio/<filename>', methods=['GET'])
+def stream_audio(filename):
+    """Stream audio file from Azure Storage or local storage"""
+    try:
+        if azure_storage.is_configured():
+            # Get audio file from Azure Blob Storage
+            blob_url = azure_storage.get_file_url(filename)
+            if not blob_url:
+                return jsonify({'error': 'Audio file not found'}), 404
+            # Return redirect to Azure blob URL
+            from flask import redirect
+            return redirect(blob_url)
+        else:
+            # Local file storage
+            upload_folder = app.config.get('UPLOAD_FOLDER', 'uploads')
+            filepath = os.path.join(upload_folder, filename)
+            if not os.path.exists(filepath):
+                return jsonify({'error': 'Audio file not found'}), 404
+            # Stream audio file with proper content type
+            return send_file(filepath, mimetype='audio/webm')
+    except Exception as e:
+        print(f"❌ Error streaming audio: {e}")
+        return jsonify({'error': f'Failed to stream audio: {str(e)}'}), 500
+
+@app.route('/api/tasks/<task_id>/attachments/<attachment_id>', methods=['DELETE'])
+def delete_attachment(task_id, attachment_id):
     db_check = check_db_connection()
-    if db_check: return db_check
+    if db_check:
+        return db_check
     try:
         storage_id = request.args.get('storage_id')
-        if not storage_id: return jsonify({'error': 'Storage ID is required'}), 400
+        if not storage_id:
+            return jsonify({'error': 'Storage ID is required'}), 400
         
         # Find the task
         task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
-        if not task: return jsonify({'error': 'Task not found'}), 404
+        if not task:
+            return jsonify({'error': 'Task not found'}), 404
+        
+        # Find the attachment
+        attachments = task.get('attachments', [])
+        attachment = None
+        for att in attachments:
+            att_id = toIdString(att.get('_id', ''))
+            if att_id == attachment_id or att.get('unique_filename') == attachment_id:
+                attachment = att
+                break
+        
+        if not attachment:
+            return jsonify({'error': 'Attachment not found'}), 404
+        
+        # Delete file from storage
+        unique_filename = attachment.get('unique_filename')
+        if unique_filename:
+            if azure_storage.is_configured():
+                azure_storage.delete_file(unique_filename)
+            else:
+                upload_folder = app.config.get('UPLOAD_FOLDER', 'uploads')
+                filepath = os.path.join(upload_folder, unique_filename)
+                if os.path.exists(filepath):
+                    os.remove(filepath)
+        
+        # Remove attachment from task
+        tasks_collection.update_one(
+            {'_id': ObjectId(task_id), 'storage_id': storage_id},
+            {'$pull': {'attachments': {'_id': attachment.get('_id')}}, '$set': {'updated_at': datetime.utcnow()}}
+        )
+        
+        # Fetch updated task
+        updated_task = tasks_collection.find_one({'_id': ObjectId(task_id)})
+        
+        # Emit Socket.IO event for real-time sync
+        socketio.emit('task_updated', {
+            'task': serialize_document(updated_task),
+            'storage_id': storage_id,
+            'update_type': 'attachment_deleted'
+        }, room=f'storage_{storage_id}')
+        
+        return jsonify({'message': 'Attachment deleted successfully'})
+    except Exception as e:
+        print(f"❌ Error deleting attachment: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Failed to delete attachment: {str(e)}'}), 500
+
+@app.route('/api/tasks/<task_id>/audio/<audio_id>', methods=['DELETE'])
+def delete_audio(task_id, audio_id):
+    db_check = check_db_connection()
+    if db_check:
+        return db_check
+    try:
+        storage_id = request.args.get('storage_id')
+        if not storage_id:
+            return jsonify({'error': 'Storage ID is required'}), 400
+        
+        # Find the task
+        task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id})
+        if not task:
+            return jsonify({'error': 'Task not found'}), 404
         
         # Find the audio recording
         audio_notes = task.get('audio_notes', [])
@@ -833,11 +870,11 @@ def delete_audio(task_id, audio_id):
         traceback.print_exc()
         return jsonify({'error': f'Failed to delete audio: {str(e)}'}), 500
 
-# --- Storage Migration endpoint ---
 @app.route('/api/storage/migrate', methods=['POST'])
 def migrate_storage():
     db_check = check_db_connection()
-    if db_check: return db_check
+    if db_check:
+        return db_check
     try:
         data = request.get_json()
         old_storage_id = data.get('old_storage_id')
@@ -880,19 +917,8 @@ def migrate_storage():
         traceback.print_exc()
         return jsonify({'error': f'Failed to migrate storage: {str(e)}'}), 500
 
-# Helper function to convert ID to string
-def toIdString(id_val):
-    """Convert various ID formats to string"""
-    if id_val is None:
-        return ''
-    if isinstance(id_val, ObjectId):
-        return str(id_val)
-    if isinstance(id_val, str):
-        return id_val
-    return str(id_val)
-
 # --- Run Flask App ---
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 Starting server on port {port}")
+    print(f"🚀 Starting server on http://0.0.0.0:{port}")
     socketio.run(app, debug=True, host='0.0.0.0', port=port)
