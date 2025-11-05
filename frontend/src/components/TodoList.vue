@@ -1611,41 +1611,6 @@ const truncateFilename = (filename) => {
   return name.substring(0, maxLength) + '...' + extension;
 };
 
-const truncateFilenameByWidth = (filename, maxWidth = 200, font = '14px Arial') => {
-  if (!filename) return '';
-
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
-  ctx.font = font;
-
-  const ellipsis = '... ';
-  const ellipsisWidth = ctx.measureText(ellipsis).width;
-
-  const lastDotIndex = filename.lastIndexOf('.');
-  const name = lastDotIndex !== -1 ? filename.substring(0, lastDotIndex) : filename;
-  const extension = lastDotIndex !== -1 ? filename.substring(lastDotIndex) : '';
-
-  // If the full filename fits, return it
-  if (ctx.measureText(filename).width <= maxWidth) {
-    return filename;
-  }
-
-  // If not, truncate progressively until it fits
-  let truncated = name;
-  while (truncated.length > 0) {
-    const testString = truncated + ellipsis + extension;
-    const width = ctx.measureText(testString).width;
-    if (width <= maxWidth) {
-      return testString;
-    }
-    truncated = truncated.slice(0, -1);
-  }
-
-  // Fallback (if even ellipsis+extension too wide)
-  return ellipsis + extension;
-};
-
-
 // --- DESCRIPTION FORMATTING ---
 const formatDescription = (description) => {
   if (!description) return '';
