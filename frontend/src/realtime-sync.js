@@ -136,15 +136,10 @@ class RealtimeSync {
     });
 
     this.socket.on('storage_online_count', (data) => {
-      console.log('DEBUG: Received storage_online_count event');
-      console.log('DEBUG: Event storage_id:', data.storage_id);
-      console.log('DEBUG: Current _s1d:', this._s1d);
-      console.log('DEBUG: Count:', data.count);
+      console.log('DEBUG: Received storage_online_count event:', data);
       if (data.storage_id === this._s1d) {
-        console.log('DEBUG: Calling onStorageOnlineCount callback');
+        console.log('DEBUG: Processing storage_online_count for current storage');
         this.callbacks.onStorageOnlineCount?.(data);
-      } else {
-        console.log('DEBUG: Ignoring storage_online_count for different storage');
       }
     });
 
