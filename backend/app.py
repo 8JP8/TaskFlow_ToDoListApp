@@ -873,6 +873,61 @@ def delete_audio(task_id, audio_id):
         traceback.print_exc()
         return jsonify({'error': f'Failed to delete audio: {str(e)}'}), 500
 
+@app.route('/api/tasks/<task_id>/restore', methods=['POST'])
+def restore_backup(task_id):
+    db_check = check_db_connection()
+    if db_check:
+        return db_check
+    try:
+        data = request.get_json()
+        storage_id = data.get('storage_id')
+        if not storage_id:
+            return jsonify({'error': 'Storage ID is required'}), 400
+        
+        # Find the backup task
+        backup_task = tasks_collection.find_one({'_id': ObjectId(task_id), 'storage_id': storage_id, 'is_backup': True})
+        if not backup_task:
+            return jsonify({'error': 'Backup task not found'}), 404
+        
+        # Update the backup task to convert it to a normal task (in-place restoration)
+        update_result = tasks_collection.update_one(
+            {'_id': ObjectId(task_id), 'storage_id': storage_id},
+            {
+                '$set': {
+                    'is_backup': False,
+                    'updated_at': datetime.utcnow()
+                },
+                '$unset': {
+                    'original_id': '',
+                    'backup_reason': ''
+                }
+            }
+        )
+        
+        if update_result.modified_count == 0:
+            return jsonify({'error': 'Failed to restore backup'}), 500
+        
+        # Fetch the updated task
+        restored_task = tasks_collection.find_one({'_id': ObjectId(task_id)})
+        
+        # Emit Socket.IO event to notify all clients that this task was restored
+        print(f"📤 Emitting task_restored event for task {task_id} to room storage_{storage_id[:8]}...")
+        socketio.emit('task_restored', {
+            'task': serialize_document(restored_task),
+            'storage_id': storage_id,
+            'task_id': task_id
+        }, room=f'storage_{storage_id}')
+        
+        return jsonify({
+            'success': True,
+            'restored_task': serialize_document(restored_task)
+        })
+    except Exception as e:
+        print(f"❌ Error restoring backup: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Failed to restore backup: {str(e)}'}), 500
+
 @app.route('/api/storage/migrate', methods=['POST'])
 def migrate_storage():
     db_check = check_db_connection()
