@@ -20,7 +20,7 @@
     
 
     <!-- APP HEADER -->
-    <header class="app-header" :style="{ marginBottom: (syncEnabled && otherOnlineCount > 1) ? 'var(--space-4)' : 'var(--space-8)' }" >
+    <header class="app-header" :style="{ marginBottom: (syncEnabled && otherOnlineCount > 0) ? 'var(--space-4)' : 'var(--space-8)' }" >
       <div class="header-icon-wrapper">
         <CheckCircleIcon />
       </div>
@@ -34,9 +34,9 @@
       </div>
 
       <!-- Online users line placed right after the course info -->
-      <div class="online-users-line" v-if="syncEnabled && otherOnlineCount > 1">
+      <div class="online-users-line" v-if="syncEnabled && otherOnlineCount > 0">
         <UsersIcon />
-        <span>{{ otherOnlineCount }} {{ t('activeUsers') }}</span>
+        <span>{{ onlineCount }} {{ t('activeUsers') }}</span>
       </div>
     </header>
 
@@ -140,9 +140,6 @@
                 <div class="task-text-content">
                   <div v-if="!task.isEditing" class="task-title-row">
                     <h3 class="task-title">{{ task.title }}</h3>
-                    <div v-if="task.is_backup" class="backup-indicator">
-                      <span class="backup-badge">{{ t('backup') }}</span>
-                    </div>
                   </div>
                   <div v-if="task.description && !task.isEditing" class="task-description-container">
                     <div 
@@ -158,45 +155,55 @@
                     ></div>
                   </div>
                   <div v-if="task.isEditing" class="edit-inline">
-    <input v-model="task.editTitle" type="text" class="form-input edit-title-input" :placeholder="t('title')" />
-    <textarea v-model="task.editDescription" class="form-textarea" :placeholder="t('description')"></textarea>
+                    <input v-model="task.editTitle" type="text" class="form-input edit-title-input" :placeholder="t('title')" />
+                    <textarea v-model="task.editDescription" class="form-textarea" :placeholder="t('description')"></textarea>
+                    <div v-if="task.taskDeletedWhileEditing" class="edit-warning">
+                      ⚠️ This task was deleted. Click Save to create a backup with your changes.
+                    </div>
                     <div class="edit-actions">
-                      <button @click="saveEdit(task)" class="btn btn-primary">{{ t('save') }}</button>
+                      <button @click="saveEditOrBackup(task)" class="btn btn-primary">{{ t('save') }}</button>
                       <button @click="cancelEdit(task)" class="btn btn-secondary">{{ t('cancel') }}</button>
                     </div>
                   </div>
                 </div>
               </div>
-              <div class="task-actions">
-                <button @click="toggleTaskDetails(task)" class="btn btn-secondary">
-                  <EyeIcon v-if="!task.showDetails" />
-                  <EyeSlashIcon v-else />
-                </button>
-                <!-- Show restore button for backup tasks, edit button for regular tasks -->
-                <button 
-                  v-if="task.is_backup" 
-                  @click="restoreFromBackup(task)" 
-                  class="btn btn-secondary" 
-                  :title="t('restoreTask')"
-                >
-                  <ArrowPathIcon />
-                </button>
-                <button 
-                  v-else
-                  @click="task.isEditing ? cancelEdit(task) : startEdit(task)" 
-                  class="btn btn-secondary" 
-                  :title="task.isEditing ? t('cancel') : t('edit')"
-                >
-                  <template v-if="!task.isEditing">
-                    <PencilSquareIcon />
-                  </template>
-                  <template v-else>
-                    <XMarkIcon />
-                  </template>
-                </button>
-                <button @click="deleteTask(task._id)" class="btn btn-danger">
-                  <TrashIcon />
-                </button>
+              
+              <!-- Container for right-side controls -->
+              <div class="task-side-controls">
+                <div v-if="task.is_backup && !task.isEditing" class="backup-indicator">
+                  <span class="backup-badge">{{ t('backup') }}</span>
+                </div>
+                <div class="task-actions">
+                  <button @click="toggleTaskDetails(task)" class="btn btn-secondary">
+                    <EyeIcon v-if="!task.showDetails" />
+                    <EyeSlashIcon v-else />
+                  </button>
+                  <!-- Show restore button for backup tasks, edit button for regular tasks -->
+                  <button 
+                    v-if="task.is_backup" 
+                    @click="restoreFromBackup(task)" 
+                    class="btn btn-secondary" 
+                    :title="t('restoreTask')"
+                  >
+                    <ArrowPathIcon />
+                  </button>
+                  <button 
+                    v-else
+                    @click="task.isEditing ? cancelEdit(task) : startEdit(task)" 
+                    class="btn btn-secondary" 
+                    :title="task.isEditing ? t('cancel') : t('edit')"
+                  >
+                    <template v-if="!task.isEditing">
+                      <PencilSquareIcon />
+                    </template>
+                    <template v-else>
+                      <XMarkIcon />
+                    </template>
+                  </button>
+                  <button @click="deleteTask(task._id)" class="btn btn-danger">
+                    <TrashIcon />
+                  </button>
+                </div>
               </div>
             </div>
             
@@ -245,9 +252,12 @@
                     <div v-if="task.attachments?.length" class="media-list">
                       <h4>{{ t('attachments') }}</h4>
                       <div v-for="file in task.attachments" :key="file._id" class="media-item">
-                        <div class="media-info"><DocumentIcon/><span>{{ file.filename }}</span></div>
+                        <div class="media-info">
+                          <DocumentIcon/>
+                          <span class="filename-display" :title="file.filename">{{ truncateFilename(file.filename) }}</span>
+                        </div>
                         <div class="media-actions">
-                          <button @click="downloadFile(file.unique_filename)" class="btn btn-success"><ArrowDownTrayIcon/></button>
+                          <button @click="downloadFile(file)" class="btn btn-success"><ArrowDownTrayIcon/></button>
                           <button @click="deleteAttachment(task._id, file._id || file.unique_filename)" class="btn btn-danger"><TrashIcon/></button>
                         </div>
                       </div>
@@ -259,8 +269,8 @@
                       <div v-for="audio in task.audio_notes" :key="audio._id" class="media-item">
                         <div class="media-info"><span class="audio-duration">{{ formatDuration(audio.duration) }}</span></div>
                         <div class="media-actions">
-                          <button @click="playAudio(audio.filename)" class="btn btn-success">
-                            <PlayIcon v-if="currentAudio !== audio.filename" />
+                          <button @click="playAudio(audio)" class="btn btn-success">
+                            <PlayIcon v-if="currentAudio !== (audio.unique_filename || audio.filename)" />
                             <PauseIcon v-else />
                           </button>
                           <button @click="deleteAudio(task._id, audio._id || audio.filename)" class="btn btn-danger"><TrashIcon/></button>
@@ -387,7 +397,7 @@
                     <div class="input-with-icon">
                       <KeyIcon class="input-icon" />
                       <input 
-                        v-model="externalStorageId" 
+                        v-model="_xs1d" 
                         type="text" 
                         :placeholder="t('storageIdPlaceholder')"
                         class="form-input external-id-input"
@@ -402,7 +412,7 @@
                   </div>
                   
                   <div class="external-id-actions">
-                    <button @click="useExternalStorageId" class="btn btn-primary" :disabled="!externalStorageId || externalStorageId.length < 8 || isUsingExternalId">
+                    <button @click="useExternalStorageId" class="btn btn-primary" :disabled="!_xs1d || _xs1d.length < 8 || isUsingExternalId">
                       <LinkIcon class="link-icon" />
                       {{ isUsingExternalId ? t('connecting') : t('connectToStorage') }}
                     </button>
@@ -513,26 +523,6 @@ import {
   InformationCircleIcon, KeyIcon, LinkIcon, CircleStackIcon, ArrowPathIcon, UsersIcon
 } from '@heroicons/vue/24/outline';
 
-// --- STATE MANAGEMENT ---
-const tasks = ref([]);
-const newTaskTitle = ref('');
-const newTaskDescription = ref('');
-const stats = reactive({ completed: 0, pending: 0 });
-const currentFilter = ref('all'); // 'all', 'completed', 'pending'
-const isDarkMode = ref(true);
-
-// --- COMPUTED PROPERTIES ---
-const filteredTasks = computed(() => {
-  switch (currentFilter.value) {
-    case 'completed':
-      return tasks.value.filter(task => task.completed);
-    case 'pending':
-      return tasks.value.filter(task => !task.completed);
-    default:
-      return tasks.value;
-  }
-});
-
 // --- SEO & Social Media Meta Tags ---
 const updateMetaTags = () => {
   const appTitle = 'TaskFlow - Real-Time Collaborative Task Management';
@@ -601,6 +591,26 @@ const updateFavicon = () => {
   document.head.appendChild(appleTouchIcon);
 };
 
+// --- STATE MANAGEMENT ---
+const tasks = ref([]);
+const newTaskTitle = ref('');
+const newTaskDescription = ref('');
+const stats = reactive({ completed: 0, pending: 0 });
+const currentFilter = ref('all'); // 'all', 'completed', 'pending'
+const isDarkMode = ref(true);
+
+// --- COMPUTED PROPERTIES ---
+const filteredTasks = computed(() => {
+  switch (currentFilter.value) {
+    case 'completed':
+      return tasks.value.filter(task => task.completed);
+    case 'pending':
+      return tasks.value.filter(task => !task.completed);
+    default:
+      return tasks.value;
+  }
+});
+
 // --- FILTER FUNCTIONS ---
 const setFilter = (filter) => {
   // If clicking the same filter, deselect it (show all tasks)
@@ -610,10 +620,10 @@ const setFilter = (filter) => {
     currentFilter.value = filter;
   }
 };
-const storageId = ref(null);
+const _s1d = ref(null);
 const showUserDialog = ref(false);
 const isRegenerating = ref(false);
-const externalStorageId = ref('');
+const _xs1d = ref('');
 const isUsingExternalId = ref(false);
 const activeTab = ref('storage');
 const toasts = ref([]);
@@ -953,7 +963,7 @@ const fetchTasks = async () => {
   try {
     const apiUrl = await apiConfig.getApiUrl();
     const response = await axios.get(`${apiUrl}/tasks`, {
-      params: { storage_id: storageId.value }
+      params: { storage_id: _s1d.value }
     });
     tasks.value = response.data.map(task => ({
       ...task,
@@ -972,7 +982,7 @@ const fetchTaskStats = async () => {
   try {
     const apiUrl = await apiConfig.getApiUrl();
     const response = await axios.get(`${apiUrl}/tasks/stats`, {
-      params: { storage_id: storageId.value }
+      params: { storage_id: _s1d.value }
     });
     stats.completed = response.data.completed;
     stats.pending = response.data.pending;
@@ -1002,7 +1012,7 @@ const addTask = async () => {
     const response = await axios.post(`${apiUrl}/tasks`, {
       title: newTaskData.title,
       description: newTaskData.description,
-      storage_id: storageId.value
+      storage_id: _s1d.value
     });
     
     // Add to local array immediately for instant UI feedback
@@ -1034,7 +1044,7 @@ const toggleTask = async (task) => {
     const apiUrl = await apiConfig.getApiUrl();
     await axios.put(`${apiUrl}/tasks/${task._id}`, { 
       completed: !task.completed,
-      storage_id: storageId.value
+      storage_id: _s1d.value
     });
     task.completed = !task.completed;
     fetchTaskStats();
@@ -1061,9 +1071,12 @@ const deleteTask = async (taskId) => {
   }
   
   try {
+    // Track this action to prevent self-notifications
+    lastActionTimestamp.value = Date.now();
+    
     const apiUrl = await apiConfig.getApiUrl();
     await axios.delete(`${apiUrl}/tasks/${taskId}`, {
-      params: { storage_id: storageId.value }
+      params: { storage_id: _s1d.value }
     });
     tasks.value = tasks.value.filter(task => task._id !== taskId);
     fetchTaskStats();
@@ -1084,7 +1097,18 @@ const startEdit = (task) => {
   realtimeSync.updateActivity('editing');
 };
 const cancelEdit = (task) => {
+  // If task was deleted while editing, remove it from the list
+  if (task.taskDeletedWhileEditing) {
+    const taskIndex = tasks.value.findIndex(t => t._id === task._id);
+    if (taskIndex !== -1) {
+      tasks.value.splice(taskIndex, 1);
+      fetchTaskStats();
+      addToast('info', 'Task Removed', 'The deleted task has been removed from your list.');
+    }
+  }
+  
   task.isEditing = false;
+  task.taskDeletedWhileEditing = false; // Clear the flag
   
   // Update activity status
   realtimeSync.updateActivity('idle');
@@ -1101,11 +1125,12 @@ const saveEdit = async (task) => {
     await axios.put(`${apiUrl}/tasks/${task._id}`, {
       title: task.editTitle,
       description: task.editDescription,
-      storage_id: storageId.value
+      storage_id: _s1d.value
     });
     task.title = task.editTitle;
     task.description = task.editDescription;
     task.isEditing = false;
+    task.taskDeletedWhileEditing = false; // Clear the flag on successful save
     
     // Update activity status
     realtimeSync.updateActivity('idle');
@@ -1117,20 +1142,40 @@ const saveEdit = async (task) => {
   } catch (error) { 
     console.error('Error saving task edits:', error);
     
-    // If task was deleted (404 error), create backup instead
+    // If task was deleted (404 error), mark it and notify user - DON'T create backup yet
     if (error.response?.status === 404) {
-      console.log('Task was deleted while editing, creating backup...');
-      await createTaskBackup(task, 'task deleted while editing');
-      // Remove the original task from the list after backup creation
-      const taskIndex = tasks.value.findIndex(t => t._id === task._id);
-      if (taskIndex !== -1) {
-        tasks.value.splice(taskIndex, 1);
-      }
-      task.isEditing = false;
-      addToast('info', 'Task Deleted', 'Your changes were saved as a backup because the task was deleted.');
+      console.log('Task was deleted while editing. User must click Save again to create backup.');
+      
+      // Mark task as deleted while editing
+      task.taskDeletedWhileEditing = true;
+      
+      addToast('warning', 'Task Deleted', 'This task was deleted by another user. Click Save again to create a backup with your changes.');
     } else {
       addToast('error', t('networkError2'), t('networkError2'));
     }
+  }
+};
+
+const saveEditOrBackup = async (task) => {
+  // If task was deleted while editing, create backup instead of updating
+  if (task.taskDeletedWhileEditing) {
+    console.log('Creating backup with user edits after confirmation...');
+    
+    await createTaskBackup(task, 'task deleted while editing');
+    
+    // Remove the task from the list
+    const taskIndex = tasks.value.findIndex(t => t._id === task._id);
+    if (taskIndex !== -1) {
+      tasks.value.splice(taskIndex, 1);
+    }
+    
+    task.isEditing = false;
+    task.taskDeletedWhileEditing = false;
+    
+    addToast('success', 'Backup Created', 'Your changes were saved as a backup.');
+  } else {
+    // Normal save
+    await saveEdit(task);
   }
 };
 
@@ -1150,7 +1195,7 @@ const handleFileUpload = async (event, taskId) => {
   
   const formData = new FormData();
   formData.append('file', file);
-  formData.append('storage_id', storageId.value);
+  formData.append('storage_id', _s1d.value);
   try {
     const apiUrl = await apiConfig.getApiUrl();
     const resp = await axios.post(`${apiUrl}/tasks/${taskId}/upload`, formData);
@@ -1170,8 +1215,23 @@ const handleFileUpload = async (event, taskId) => {
   }
 };
 
-const downloadFile = async (filename) => {
+const downloadFile = async (fileInfo) => {
   try {
+    // If file has blob_url (from Azure Storage), use it directly
+    if (typeof fileInfo === 'object' && fileInfo.blob_url) {
+      const link = document.createElement('a');
+      link.href = fileInfo.blob_url;
+      link.setAttribute('download', fileInfo.filename || 'download');
+      link.setAttribute('target', '_blank');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      addToast('success', t('fileDownloadSuccess'));
+      return;
+    }
+    
+    // Otherwise, use the API endpoint
+    const filename = typeof fileInfo === 'string' ? fileInfo : (fileInfo.unique_filename || fileInfo.filename);
     const apiUrl = await apiConfig.getApiUrl();
     const response = await axios.get(`${apiUrl}/files/${filename}`, { responseType: 'blob' });
     const url = window.URL.createObjectURL(new Blob([response.data]));
@@ -1200,10 +1260,13 @@ const toIdString = (val) => {
 const deleteAttachment = async (taskId, attachmentId) => {
   if (!confirm(t('confirmDeleteAttachment'))) return;
   try {
+    // Track this action to prevent self-notifications
+    lastActionTimestamp.value = Date.now();
+    
     const apiUrl = await apiConfig.getApiUrl();
     const idStr = toIdString(attachmentId);
     await axios.delete(`${apiUrl}/tasks/${taskId}/attachments/${idStr}`, {
-      params: { storage_id: storageId.value }
+      params: { storage_id: _s1d.value }
     });
     const task = tasks.value.find(t => t._id === taskId);
     if (task) {
@@ -1375,7 +1438,7 @@ const startRecording = async (taskId) => {
                     const resp = await axios.post(`${apiUrl}/tasks/${recordingTaskId.value}/audio`, {
                         audio_data: reader.result,
                         duration: duration,
-                        storage_id: storageId.value
+                        storage_id: _s1d.value
                     });
                     
                     console.log('Upload successful');
@@ -1504,16 +1567,25 @@ const stopRecording = () => {
     }
 };
 
-const playAudio = async (filename) => {
-  if (currentAudio.value === filename) {
+const playAudio = async (audioInfo) => {
+  const audioId = typeof audioInfo === 'string' ? audioInfo : (audioInfo.unique_filename || audioInfo.filename);
+  
+  if (currentAudio.value === audioId) {
     audioPlayer.value.pause();
     currentAudio.value = null;
   } else {
     try {
-      const apiUrl = await apiConfig.getApiUrl();
-      audioPlayer.value.src = `${apiUrl}/audio/${filename}`;
+      // If audio has blob_url (from Azure Storage), use it directly
+      if (typeof audioInfo === 'object' && audioInfo.blob_url) {
+        audioPlayer.value.src = audioInfo.blob_url;
+      } else {
+        // Otherwise, use the API endpoint
+        const filename = typeof audioInfo === 'string' ? audioInfo : (audioInfo.unique_filename || audioInfo.filename);
+        const apiUrl = await apiConfig.getApiUrl();
+        audioPlayer.value.src = `${apiUrl}/audio/${filename}`;
+      }
       await audioPlayer.value.play();
-      currentAudio.value = filename;
+      currentAudio.value = audioId;
     } catch (error) {
       console.error("Error playing audio:", error);
       addToast('error', t('playbackError'), t('cannotPlayAudio'));
@@ -1525,10 +1597,13 @@ const playAudio = async (filename) => {
 const deleteAudio = async (taskId, audioId) => {
   if (!confirm(t('confirmDeleteAudio'))) return;
   try {
+    // Track this action to prevent self-notifications
+    lastActionTimestamp.value = Date.now();
+    
     const apiUrl = await apiConfig.getApiUrl();
     const idStr = toIdString(audioId);
     await axios.delete(`${apiUrl}/tasks/${taskId}/audio/${idStr}`, {
-      params: { storage_id: storageId.value }
+      params: { storage_id: _s1d.value }
     });
     const task = tasks.value.find(t => t._id === taskId);
     if (task) {
@@ -1557,6 +1632,27 @@ const formatDuration = (seconds) => {
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins}:${secs.toString().padStart(2, '0')}`;
+};
+
+const truncateFilename = (filename) => {
+  if (!filename) return '';
+  const maxLength = 40; // Fixed character limit
+  const lastDotIndex = filename.lastIndexOf('.');
+  
+  if (lastDotIndex === -1) {
+    // No extension, just truncate the whole thing
+    return filename.length > (maxLength - 7) ? filename.substring(0, maxLength) + '...' : filename;
+  }
+  
+  const name = filename.substring(0, lastDotIndex);
+  const extension = filename.substring(lastDotIndex);
+  
+  if (name.length <= maxLength) {
+    return filename; // No truncation needed
+  }
+  
+  // Truncate name part, keep extension
+  return name.substring(0, maxLength) + '...' + extension;
 };
 
 // --- DESCRIPTION FORMATTING ---
@@ -1600,7 +1696,7 @@ const toggleTaskDetails = (task) => {
 
 // --- REAL-TIME SYNC METHODS ---
 const initializeRealtimeSync = async () => {
-  if (!storageId.value) return;
+  if (!_s1d.value) return;
   
   // Generate a unique user ID for this session
   userId.value = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -1609,11 +1705,12 @@ const initializeRealtimeSync = async () => {
   realtimeSync.setCallback('onTaskCreated', handleRemoteTaskCreated);
   realtimeSync.setCallback('onTaskUpdated', handleRemoteTaskUpdated);
   realtimeSync.setCallback('onTaskDeleted', handleRemoteTaskDeleted);
+  realtimeSync.setCallback('onTaskRestored', handleRemoteTaskRestored);
   realtimeSync.setCallback('onUserActivity', handleUserActivity);
   realtimeSync.setCallback('onConnectionChange', handleConnectionChange);
   
   // Connect to real-time sync
-  await realtimeSync.connect(storageId.value, userId.value);
+  await realtimeSync.connect(_s1d.value, userId.value);
   
   // Update activity status
   realtimeSync.updateActivity('idle');
@@ -1636,7 +1733,6 @@ const initializeRealtimeSync = async () => {
   // Add debug functions for testing
   window.debugSocket = () => {
     console.log('DEBUG: Socket connection status:', realtimeSync.isConnected);
-    console.log('DEBUG: Storage ID:', storageId.value);
     console.log('DEBUG: User ID:', userId.value);
     console.log('DEBUG: Sync enabled:', syncEnabled.value);
   };
@@ -1645,9 +1741,12 @@ const initializeRealtimeSync = async () => {
     console.log('DEBUG: Testing Socket.IO connection...');
     const apiUrl = await apiConfig.getApiUrl();
     try {
-      const response = await fetch(`${apiUrl}/test-socket?storage_id=${storageId.value}`);
+      const response = await fetch(`${apiUrl}/test-socket?storage_id=${_s1d.value}`);
       const result = await response.json();
-      console.log('DEBUG: Test socket response:', result);
+      // Filter out storage_id from response before logging
+      const filteredResult = { ...result };
+      delete filteredResult.storage_id;
+      console.log('DEBUG: Test socket response:', filteredResult);
     } catch (error) {
       console.error('DEBUG: Test socket error:', error);
     }
@@ -1660,7 +1759,6 @@ const initializeRealtimeSync = async () => {
     
     // Test if we can receive events
     console.log('Socket.IO connection status:', realtimeSync.isConnected);
-    console.log('Current storage ID:', storageId.value);
     
     // Add a global test function for debugging
     window.testSocketIO = () => {
@@ -1684,9 +1782,9 @@ const handleRemoteTaskCreated = (task) => {
     return;
   }
   
-  // Check if this is a recent local creation (within last 2 seconds) to prevent self-duplication
+  // Check if this is a recent local creation (within last 5 seconds) to prevent self-duplication
   const now = Date.now();
-  const isRecentLocalCreation = (now - lastActionTimestamp.value) < 2000;
+  const isRecentLocalCreation = (now - lastActionTimestamp.value) < 5000;
   
   if (isRecentLocalCreation) {
     console.log('Ignoring recent local task creation to prevent duplication');
@@ -1724,23 +1822,26 @@ const handleRemoteTaskCreated = (task) => {
 const handleRemoteTaskUpdated = async (data) => {
   if (!syncEnabled.value) return;
   
+  const taskId = data.task_id || (data.task ? data.task._id : null);
+  if (!taskId) {
+      console.log('DEBUG: Received remote task update without a task ID.', data);
+      return;
+  }
+
   console.log('DEBUG: Remote task updated:', data);
-  console.log('DEBUG: Update type:', data.update_type);
-  console.log('DEBUG: Task ID:', data.task_id);
-  console.log('DEBUG: Full data object:', JSON.stringify(data, null, 2));
   
-  // Check if this update was made by the current user (within last 2 seconds)
+  // Check if this update was made by the current user (within last 5 seconds)
   const now = Date.now();
-  const isOwnUpdate = (now - lastActionTimestamp.value) < 2000;
+  const isOwnUpdate = (now - lastActionTimestamp.value) < 5000;
   
   if (isOwnUpdate) {
     console.log('Ignoring own update to prevent self-notification');
     return;
   }
   
-  const taskIndex = tasks.value.findIndex(t => t._id === data.task_id);
+  const taskIndex = tasks.value.findIndex(t => t._id === taskId);
   if (taskIndex === -1) {
-    console.log('Task not found for update:', data.task_id);
+    console.log('Task not found for update:', taskId);
     return;
   }
   
@@ -1749,7 +1850,7 @@ const handleRemoteTaskUpdated = async (data) => {
   // Don't update if user is currently editing this task
   if (task.isEditing) {
     // Check if there are unsaved changes
-    const hasUnsavedChanges = task.editTitle !== task.title || task.editDescription !== task.description;
+    const hasUnsavedChanges = task.editTitle !== task.title || task.editDescription !== (task.description || '');
     
     if (hasUnsavedChanges) {
       // Handle edit conflict by creating backup and applying update
@@ -1758,85 +1859,22 @@ const handleRemoteTaskUpdated = async (data) => {
     } else {
       // Store the update for later
       pendingUpdates.value.push(data);
+      console.log('Task is being edited without changes, queuing remote update.');
       return;
     }
   }
   
-  // Update the task
+  // Apply update if the full task object is provided
   if (data.task) {
-    // Full task update - preserve UI state but update all data
-    console.log('Updating full task data:', data.task);
+    console.log('Updating full task data from remote:', data.task);
     tasks.value[taskIndex] = {
       ...data.task,
-      showDetails: task.showDetails,
-      isEditing: false,
+      showDetails: task.showDetails, // Preserve UI state
+      isEditing: false, // Ensure editing is off
       editTitle: data.task.title,
       editDescription: data.task.description || ''
     };
     addToast('info', t('taskUpdated'), t('syncedFromAnotherDevice'));
-  } else if (data.update_type && data.update_type.includes('_deleted')) {
-    // Handle deletion updates by updating the full task data
-    console.log('Handling deletion update:', data.update_type, data.task);
-    if (data.task) {
-      tasks.value[taskIndex] = {
-        ...data.task,
-        showDetails: task.showDetails,
-        isEditing: false,
-        editTitle: data.task.title,
-        editDescription: data.task.description || ''
-      };
-    }
-    addToast('info', t('taskUpdated'), t('syncedFromAnotherDevice'));
-  } else if (data.update_type === 'attachment_added') {
-    // Add attachment to existing task
-    console.log('Adding attachment:', data.file_info);
-    task.attachments = task.attachments || [];
-    // Convert the file_info to proper format
-    const newAttachment = {
-      ...data.file_info,
-      uploaded_at: data.file_info.uploaded_at || new Date().toISOString()
-    };
-    task.attachments.push(newAttachment);
-    addToast('info', t('fileUploadSuccess'), t('syncedFromAnotherDevice'));
-  } else if (data.update_type === 'audio_added') {
-    // Add audio to existing task
-    console.log('Adding audio:', data.audio_info);
-    task.audio_notes = task.audio_notes || [];
-    // Convert the audio_info to proper format
-    const newAudio = {
-      ...data.audio_info,
-      recorded_at: data.audio_info.recorded_at || new Date().toISOString()
-    };
-    task.audio_notes.push(newAudio);
-    addToast('info', t('audioUploadSuccess'), t('syncedFromAnotherDevice'));
-  } else if (data.update_type === 'attachment_deleted') {
-    // Handle attachment deletion - update the full task data
-    console.log('DEBUG: Processing attachment_deleted event');
-    console.log('DEBUG: Task before update:', task);
-    console.log('DEBUG: New task data:', data.task);
-    console.log('DEBUG: Task attachments before:', task.attachments?.length || 0);
-    console.log('DEBUG: Task attachments after:', data.task?.attachments?.length || 0);
-    
-    tasks.value[taskIndex] = {
-      ...data.task,
-      showDetails: task.showDetails,
-      isEditing: false,
-      editTitle: data.task.title,
-      editDescription: data.task.description || ''
-    };
-    console.log('DEBUG: Task updated successfully in local state');
-    addToast('info', t('fileDeleteSuccess'), t('syncedFromAnotherDevice'));
-  } else if (data.update_type === 'audio_deleted') {
-    // Handle audio deletion - update the full task data
-    console.log('Audio deleted, updating task:', data.task);
-    tasks.value[taskIndex] = {
-      ...data.task,
-      showDetails: task.showDetails,
-      isEditing: false,
-      editTitle: data.task.title,
-      editDescription: data.task.description || ''
-    };
-    addToast('info', t('audioDeleteSuccess'), t('syncedFromAnotherDevice'));
   }
   
   fetchTaskStats();
@@ -1846,6 +1884,15 @@ const handleRemoteTaskDeleted = async (taskId) => {
   if (!syncEnabled.value) return;
   
   console.log('Remote task deleted:', taskId);
+  
+  // Check if this deletion was made by the current user (within last 5 seconds)
+  const now = Date.now();
+  const isOwnDeletion = (now - lastActionTimestamp.value) < 5000;
+  
+  if (isOwnDeletion) {
+    console.log('Ignoring own deletion to prevent self-notification');
+    return;
+  }
   
   const taskIndex = tasks.value.findIndex(t => t._id === taskId);
   if (taskIndex === -1) {
@@ -1868,23 +1915,52 @@ const handleRemoteTaskDeleted = async (taskId) => {
   
   // Don't delete if user is currently editing this task
   if (task.isEditing) {
-    // Check if there are unsaved changes
-    const hasUnsavedChanges = task.editTitle !== task.title || task.editDescription !== task.description;
+    // Mark that the task was deleted, don't auto-create backup
+    task.taskDeletedWhileEditing = true;
+    addToast('warning', 'Task Deleted by Another User', 'This task was deleted. Click Save to backup your changes or Cancel to discard.');
+    return;
+  }
+  
+  // Remove the task
+  tasks.value.splice(taskIndex, 1);
+  addToast('info', t('taskDeleted'), t('syncedFromAnotherDevice'));
+  
+  fetchTaskStats();
+};
+
+const handleRemoteTaskRestored = (data) => {
+  if (!syncEnabled.value) return;
+  
+  console.log('Remote task restored:', data);
+  
+  // Check if this restoration was made by the current user (within last 5 seconds)
+  const now = Date.now();
+  const isOwnRestoration = (now - lastActionTimestamp.value) < 5000;
+  
+  if (isOwnRestoration) {
+    console.log('Ignoring own restoration to prevent self-notification');
+    return;
+  }
+  
+  const task = data.task;
+  const taskIndex = tasks.value.findIndex(t => t._id === task._id);
+  
+  if (taskIndex !== -1) {
+    // Update the existing backup task to make it a normal task
+    const updatedTask = {
+      ...tasks.value[taskIndex],
+      ...task,
+      is_backup: false,
+      original_id: undefined,
+      backup_reason: undefined,
+      showDetails: tasks.value[taskIndex].showDetails,
+      isEditing: false,
+      editTitle: task.title,
+      editDescription: task.description || ''
+    };
+    tasks.value.splice(taskIndex, 1, updatedTask);
     
-    if (hasUnsavedChanges) {
-      // Create backup and then remove from list
-      await createTaskBackup(task, 'task deleted while editing');
-      tasks.value.splice(taskIndex, 1);
-      addToast('info', t('taskDeleted'), t('syncedFromAnotherDevice'));
-    } else {
-      // Store the deletion for later
-      pendingUpdates.value.push({ type: 'delete', task_id: taskId });
-      return;
-    }
-  } else {
-    // Remove the task
-    tasks.value.splice(taskIndex, 1);
-    addToast('info', t('taskDeleted'), t('syncedFromAnotherDevice'));
+    addToast('success', 'Task Restored', 'A backup was restored by another user.');
   }
   
   fetchTaskStats();
@@ -1969,11 +2045,11 @@ const verifyAndSyncAllTasks = async () => {
   try {
     const apiUrl = await apiConfig.getApiUrl();
     const response = await axios.get(`${apiUrl}/tasks`, {
-      params: { storage_id: storageId.value }
+      params: { storage_id: _s1d.value }
     });
     
-    if (response.data && response.data.tasks) {
-      const serverTasks = response.data.tasks;
+    if (response.data && Array.isArray(response.data)) {
+      const serverTasks = response.data;
       const localTasks = tasks.value;
       
       // Check for tasks that exist on server but not locally
@@ -1994,7 +2070,7 @@ const verifyAndSyncAllTasks = async () => {
           const serverUpdated = new Date(serverTask.updated_at || serverTask.created_at);
           const localUpdated = new Date(localTask.updated_at || localTask.created_at);
           
-          if (serverUpdated > localUpdated) {
+          if (serverUpdated > localUpdated && !localTask.isEditing) {
             console.log('Server task is more recent, updating locally:', serverTask._id);
             const taskIndex = localTasks.findIndex(t => t._id === serverTask._id);
             if (taskIndex !== -1) {
@@ -2027,76 +2103,28 @@ const verifyAndSyncAllTasks = async () => {
   }
 };
 
-// --- VERSION CONTROL SYSTEM ---
-// --- DATA VALIDATION SYSTEM ---
-
-
+// --- BACKUP & CONFLICT LOGIC ---
 const validateTaskDataForBackup = async (task) => {
-  console.log('Validating task data for backup (skip server checks):', task._id);
-  
-  const validatedTask = {
-    ...task,
-    attachments: [],
-    audio_notes: []
-  };
-  
-  // Validate attachments - only check structure, not server existence
-  if (task.attachments && task.attachments.length > 0) {
-    console.log('Validating attachments for backup:', task.attachments.length);
-    for (const attachment of task.attachments) {
-      // Only check if attachment has required fields
-      if (attachment._id && attachment.filename && attachment.uploaded_at) {
-        validatedTask.attachments.push(attachment);
-        console.log('Valid attachment for backup:', attachment.filename);
-      } else {
-        console.log('Invalid attachment filtered out:', attachment.filename);
-      }
-    }
+  const validatedTask = { ...task, attachments: [], audio_notes: [] };
+  if (task.attachments) {
+    validatedTask.attachments = task.attachments.filter(att => att._id && att.filename);
   }
-  
-  // Validate audio notes - only check structure, not server existence
-  if (task.audio_notes && task.audio_notes.length > 0) {
-    console.log('Validating audio notes for backup:', task.audio_notes.length);
-    for (const audioNote of task.audio_notes) {
-      // Only check if audio has required fields and valid duration
-      if (audioNote._id && audioNote.filename && audioNote.recorded_at && 
-          audioNote.duration && audioNote.duration > 0) {
-        validatedTask.audio_notes.push(audioNote);
-        console.log('Valid audio for backup:', audioNote.filename);
-      } else {
-        console.log('Invalid audio filtered out:', audioNote.filename);
-      }
-    }
+  if (task.audio_notes) {
+    validatedTask.audio_notes = task.audio_notes.filter(aud => aud._id && aud.filename && aud.duration > 0);
   }
-  
-  console.log(`Backup validation complete: ${validatedTask.attachments.length} valid attachments, ${validatedTask.audio_notes.length} valid audio notes`);
   return validatedTask;
 };
 
-
 const createTaskBackupWithAllData = async (task, reason) => {
   try {
-    console.log('Creating backup with all data for task:', task._id);
-    
-    // Validate task data before creating backup (skip server checks for deleted tasks)
     const validatedTask = await validateTaskDataForBackup(task);
-    
-    // Log validation results
-    const originalAttachments = task.attachments ? task.attachments.length : 0;
-    const originalAudioNotes = task.audio_notes ? task.audio_notes.length : 0;
-    const validAttachments = validatedTask.attachments.length;
-    const validAudioNotes = validatedTask.audio_notes.length;
-    
-    console.log(`Validation results: ${validAttachments}/${originalAttachments} attachments valid, ${validAudioNotes}/${originalAudioNotes} audio notes valid`);
-    
-    // Create backup task object with validated data only
     const backupTaskData = {
-      title: validatedTask.title + ' backup',
-      description: validatedTask.description,
+      title: (validatedTask.editTitle || validatedTask.title), // No more suffix
+      description: validatedTask.editDescription || validatedTask.description || '',
       completed: validatedTask.completed,
-      storage_id: storageId.value,
-      attachments: validatedTask.attachments, // Only valid attachments
-      audio_notes: validatedTask.audio_notes,  // Only valid audio notes
+      storage_id: _s1d.value,
+      attachments: validatedTask.attachments,
+      audio_notes: validatedTask.audio_notes,
       is_backup: true,
       original_id: task._id,
       backup_reason: reason
@@ -2105,46 +2133,28 @@ const createTaskBackupWithAllData = async (task, reason) => {
     const apiUrl = await apiConfig.getApiUrl();
     const response = await axios.post(`${apiUrl}/tasks`, backupTaskData);
     
-    // Add the backup task to the local list
-    const backupTask = {
-      ...response.data,
-      showDetails: false,
-      isEditing: false,
-      editTitle: response.data.title,
-      editDescription: response.data.description || ''
-    };
-    
+    const backupTask = { ...response.data, showDetails: false, isEditing: false, editTitle: response.data.title, editDescription: response.data.description || '' };
     tasks.value.unshift(backupTask);
     fetchTaskStats();
-    
-    console.log('Backup created successfully:', backupTask._id);
-    console.log(`Backup contains: ${validAttachments} valid attachments, ${validAudioNotes} valid audio notes`);
-    
-    // Show user-friendly message about validation results
-    if (originalAttachments > validAttachments || originalAudioNotes > validAudioNotes) {
-      addToast('info', t('backupCreatedAfterRecording'), `${t('taskSavedAsBackup')} ${t('invalidDataFiltered')}`);
-    } else {
-      addToast('success', t('backupCreatedAfterRecording'), t('taskSavedAsBackup'));
-    }
+    addToast('success', t('backupCreatedAfterRecording'), t('taskSavedAsBackup'));
   } catch (error) {
-    console.error('Error creating backup with all data:', error);
     addToast('error', t('backupCreationError'), t('networkError2'));
   }
 };
 
 const createTaskBackup = async (task, reason) => {
   try {
-    // Create backup with proper naming
-    const backupTitle = `${task.editTitle || task.title} backup`;
-    const backupDescription = task.editDescription || task.description;
+    lastActionTimestamp.value = Date.now();
+    // FIXED: Do not add a suffix to the backup title
+    const backupTitle = task.editTitle || task.title;
+    const backupDescription = task.editDescription || task.description || '';
     
-    // Save backup to database
     const apiUrl = await apiConfig.getApiUrl();
     const response = await axios.post(`${apiUrl}/tasks`, {
       title: backupTitle,
       description: backupDescription,
       completed: task.completed,
-      storage_id: storageId.value,
+      storage_id: _s1d.value,
       attachments: task.attachments || [],
       audio_notes: task.audio_notes || [],
       is_backup: true,
@@ -2152,78 +2162,76 @@ const createTaskBackup = async (task, reason) => {
       backup_reason: reason
     });
     
-    // Add to local tasks list
-    const backup = {
-      ...response.data,
-      showDetails: false,
-      isEditing: false,
-      editTitle: response.data.title,
-      editDescription: response.data.description || ''
-    };
-    
+    const backup = { ...response.data, showDetails: false, isEditing: false, editTitle: response.data.title, editDescription: response.data.description || '' };
     tasks.value.unshift(backup);
     fetchTaskStats();
     
-    addToast('info', 'Backup Created', `Task backed up due to ${reason}`);
+    addToast('info', 'Backup Created', `Task backed up due to ${reason}.`);
     return backup;
   } catch (error) {
     console.error('Error creating backup:', error);
-    addToast('error', 'Backup Failed', 'Could not create backup task');
+    addToast('error', 'Backup Failed', 'Could not create backup task.');
     return null;
   }
 };
 
 const handleEditConflict = async (task, remoteUpdate) => {
-  // Create a backup of the current edit
+  // 1. Cria um backup com as alterações locais não guardadas.
   await createTaskBackup(task, 'edit conflict');
   
-  // Apply the remote update to the original task
+  // 2. Remove imediatamente a tarefa original da lista para evitar duplicação visual.
+  const originalTaskIndex = tasks.value.findIndex(t => t._id === task._id);
+  if (originalTaskIndex !== -1) {
+      tasks.value.splice(originalTaskIndex, 1);
+  }
+
+  // 3. Adiciona (ou atualiza) a tarefa com os dados recebidos do servidor.
   if (remoteUpdate.task) {
-    task.title = remoteUpdate.task.title;
-    task.description = remoteUpdate.task.description;
-    task.editTitle = remoteUpdate.task.title;
-    task.editDescription = remoteUpdate.task.description;
-    task.isEditing = false; // Stop editing mode
+    const updatedTaskFromServer = {
+      ...remoteUpdate.task,
+      showDetails: false, // Reset UI state for the new version
+      isEditing: false,
+      editTitle: remoteUpdate.task.title,
+      editDescription: remoteUpdate.task.description || ''
+    };
+    tasks.value.unshift(updatedTaskFromServer); // Adiciona a versão mais recente ao topo da lista.
   }
   
-  // Show conflict resolution dialog
   addToast('info', 'Edit Conflict', 'Your changes were saved as a backup. The latest version is now displayed.');
 };
 
 const restoreFromBackup = async (backupTask) => {
   try {
-    // Create a new task from the backup
+    // FIXED: Set timestamp before API call to prevent duplication from WebSocket event
+    lastActionTimestamp.value = Date.now();
+
     const apiUrl = await apiConfig.getApiUrl();
-    const response = await axios.post(`${apiUrl}/tasks`, {
-      title: backupTask.title.replace(' backup', ''), // Remove backup suffix
-      description: backupTask.description,
-      completed: backupTask.completed,
-      storage_id: storageId.value,
-      attachments: backupTask.attachments || [],
-      audio_notes: backupTask.audio_notes || []
+    
+    // Use the dedicated restore endpoint that updates in-place
+    const response = await axios.post(`${apiUrl}/tasks/${backupTask._id}/restore`, {
+      storage_id: _s1d.value
     });
     
-    // Add the restored task to the local list
-    const restoredTask = {
-      ...response.data,
-      showDetails: false,
-      isEditing: false,
-      editTitle: response.data.title,
-      editDescription: response.data.description || ''
-    };
-    
-    tasks.value.unshift(restoredTask);
-    
-    // Delete the backup task from database and local list
-    await axios.delete(`${apiUrl}/tasks/${backupTask._id}?storage_id=${storageId.value}`);
-    const backupIndex = tasks.value.findIndex(t => t._id === backupTask._id);
-    if (backupIndex !== -1) {
-      tasks.value.splice(backupIndex, 1);
+    if (response.data.success) {
+      // The server already emitted task_restored event to all other clients
+      // Update local state immediately for the user who clicked restore
+      const restoredTask = { 
+        ...response.data.restored_task, 
+        showDetails: backupTask.showDetails || false, 
+        isEditing: false, 
+        editTitle: response.data.restored_task.title, 
+        editDescription: response.data.restored_task.description || '' 
+      };
+      
+      // Replace backup task with restored task (same ID, just updated)
+      const backupIndex = tasks.value.findIndex(t => t._id === backupTask._id);
+      if (backupIndex !== -1) {
+        tasks.value.splice(backupIndex, 1, restoredTask);
+      }
+      
+      fetchTaskStats();
+      addToast('success', t('taskRestored'), t('taskRestoredFromBackup'));
     }
-    
-    fetchTaskStats();
-    
-    addToast('success', t('taskRestored'), t('taskRestoredFromBackup'));
   } catch (error) {
     console.error('Error restoring task:', error);
     addToast('error', t('restoreError'), t('networkError2'));
@@ -2242,64 +2250,42 @@ const checkAndResolveDuplicates = () => {
     if (seenTasks.has(key)) {
       const existingTask = seenTasks.get(key);
       
-      // If content is identical, mark for removal
-      if (task.description === existingTask.description && 
-          task.completed === existingTask.completed) {
+      if (task.description === existingTask.description && task.completed === existingTask.completed) {
         tasksToRemove.push(index);
-        console.log('Removing duplicate task:', task.title);
       } else {
-        // If content is different, rename the newer one
-        const newName = `${task.title}_2`;
+        const newName = `${task.title} (2)`;
         tasksToRename.push({ index, newName });
-        console.log('Renaming duplicate task:', task.title, 'to', newName);
       }
     } else {
       seenTasks.set(key, task);
     }
   });
   
-  // Remove duplicates (in reverse order to maintain indices)
-  tasksToRemove.reverse().forEach(index => {
-    tasks.value.splice(index, 1);
-  });
-  
-  // Rename duplicates
+  tasksToRemove.reverse().forEach(index => tasks.value.splice(index, 1));
   tasksToRename.forEach(({ index, newName }) => {
     tasks.value[index].title = newName;
     tasks.value[index].editTitle = newName;
   });
   
   if (tasksToRemove.length > 0 || tasksToRename.length > 0) {
-    console.log(`Resolved ${tasksToRemove.length} duplicates and renamed ${tasksToRename.length} tasks`);
     fetchTaskStats();
   }
 };
 
 const preventDuplicateTask = (newTask) => {
-  // Check if a task with the same title already exists
-  const existingTask = tasks.value.find(t => 
-    t.title.toLowerCase().trim() === newTask.title.toLowerCase().trim()
-  );
+  const existingTask = tasks.value.find(t => t.title.toLowerCase().trim() === newTask.title.toLowerCase().trim());
   
   if (existingTask) {
-    // If content is identical, don't add the new task
-    if (existingTask.description === newTask.description && 
-        existingTask.completed === newTask.completed) {
-      console.log('Preventing duplicate task:', newTask.title);
+    if (existingTask.description === newTask.description && existingTask.completed === newTask.completed) {
       return false;
     } else {
-      // If content is different, rename the new task
       let counter = 2;
-      let newName = `${newTask.title}_${counter}`;
-      
+      let newName = `${newTask.title} (${counter})`;
       while (tasks.value.some(t => t.title === newName)) {
         counter++;
-        newName = `${newTask.title}_${counter}`;
+        newName = `${newTask.title} (${counter})`;
       }
-      
       newTask.title = newName;
-      newTask.editTitle = newName;
-      console.log('Renamed duplicate task to:', newName);
     }
   }
   
@@ -2307,15 +2293,12 @@ const preventDuplicateTask = (newTask) => {
 };
 
 const toggleRealtimeSync = async () => {
-  // Save setting to localStorage
   localStorage.setItem('realtimeSyncEnabled', syncEnabled.value.toString());
   
   if (syncEnabled.value) {
-    // Enable real-time sync
     await initializeRealtimeSync();
     addToast('success', t('realtimeSyncEnabled'), t('realtimeSyncEnabledDescription'));
   } else {
-    // Disable real-time sync
     if (realtimeSync) {
       realtimeSync.disconnect();
     }
@@ -2325,56 +2308,37 @@ const toggleRealtimeSync = async () => {
 
 // --- TOAST SYSTEM ---
 const addToast = (type, title, message = '') => {
-  // Create a unique key for this notification to prevent spam
   const notificationKey = `${type}-${title}-${message}`;
+  if (recentNotifications.value.has(notificationKey)) return;
   
-  // Check if we already showed this notification recently (within 3 seconds)
-  if (recentNotifications.value.has(notificationKey)) {
-    return;
-  }
-  
-  // Add to recent notifications and remove after 3 seconds
   recentNotifications.value.add(notificationKey);
-  setTimeout(() => {
-    recentNotifications.value.delete(notificationKey);
-  }, 3000);
+  setTimeout(() => recentNotifications.value.delete(notificationKey), 3000);
   
   const id = Date.now() + Math.random();
-  const toast = { id, type, title, message };
-  toasts.value.push(toast);
+  toasts.value.push({ id, type, title, message });
   
-  // Auto remove after 5 seconds
-  setTimeout(() => {
-    removeToast(id);
-  }, 5000);
+  setTimeout(() => removeToast(id), 5000);
 };
 
 const removeToast = (id) => {
   const index = toasts.value.findIndex(toast => toast.id === id);
-  if (index > -1) {
-    toasts.value.splice(index, 1);
-  }
+  if (index > -1) toasts.value.splice(index, 1);
 };
 
 // --- CUSTOM CONFIRM DIALOG ---
 const handleConfirmOk = () => {
   showConfirmDialog.value = false;
-  if (confirmDialog.value.onConfirm) {
-    confirmDialog.value.onConfirm(true);
-  }
+  if (confirmDialog.value.onConfirm) confirmDialog.value.onConfirm(true);
 };
 
 const handleConfirmCancel = () => {
   showConfirmDialog.value = false;
-  if (confirmDialog.value.onConfirm) {
-    confirmDialog.value.onConfirm(false);
-  }
+  if (confirmDialog.value.onConfirm) confirmDialog.value.onConfirm(false);
 };
 
 // --- DIALOG CLOSE HANDLER ---
 const handleUserDialogClose = () => {
   showUserDialog.value = false;
-  // Hide generated ID when dialog closes
   generatedId.value = '';
   showGeneratedId.value = false;
 };
@@ -2385,18 +2349,17 @@ const copyToClipboard = async (text) => {
     await navigator.clipboard.writeText(text);
     return true;
   } catch (err) {
-    // Fallback for older browsers
     const textArea = document.createElement('textarea');
     textArea.value = text;
     document.body.appendChild(textArea);
     textArea.select();
     try {
       document.execCommand('copy');
-      document.body.removeChild(textArea);
       return true;
     } catch (err) {
-      document.body.removeChild(textArea);
       return false;
+    } finally {
+      document.body.removeChild(textArea);
     }
   }
 };
@@ -2407,45 +2370,32 @@ const copyStorageId = async () => {
   
   try {
     const apiUrl = await apiConfig.getApiUrl();
-    const oldStorageId = storageId.value;
+    const _os1d = _s1d.value;
+    const _ns1d = storageManager.generateStorageId();
     
-    // Generate new storage ID
-    const newStorageId = storageManager.generateStorageId();
-    
-    // Migrate all tasks to new storage ID
     const response = await axios.post(`${apiUrl}/storage/migrate`, {
-      old_storage_id: oldStorageId,
-      new_storage_id: newStorageId
+      old_storage_id: _os1d,
+      new_storage_id: _ns1d
     });
     
     if (response.data.success) {
-      // Update local storage ID
-      storageId.value = newStorageId;
-      storageManager.setStorageId(newStorageId);
+      _s1d.value = _ns1d;
+      storageManager.setStorageId(_ns1d);
       
-      // Store the generated ID for display
-      generatedId.value = newStorageId;
-      showGeneratedId.value = false; // Hidden by default
+      generatedId.value = _ns1d;
+      showGeneratedId.value = false;
       
-      // Copy to clipboard
-      const copied = await copyToClipboard(newStorageId);
-      
-      // Refresh tasks and stats
+      const copied = await copyToClipboard(_ns1d);
       await fetchTasks();
       await fetchTaskStats();
       
-      if (copied) {
-        addToast('success', t('storageIdRegenerated'), t('newIdInfo'));
-      } else {
-        addToast('error', t('storageIdRegenerated'), 'Failed to copy to clipboard');
-      }
-      
+      addToast('success', t('storageIdRegenerated'), copied ? t('newIdInfo') : 'Failed to copy.');
     } else {
       throw new Error(response.data.error || 'Migration failed');
     }
   } catch (error) {
     console.error('Error regenerating storage ID:', error);
-    addToast('error', 'Error', 'Error regenerating storage ID. Please try again.');
+    addToast('error', 'Error', 'Error regenerating storage ID.');
   } finally {
     isRegenerating.value = false;
   }
@@ -2453,7 +2403,7 @@ const copyStorageId = async () => {
 
 // --- EXTERNAL DEVICE ID MANAGEMENT ---
 const useExternalStorageId = async () => {
-  if (!externalStorageId.value || externalStorageId.value.length < 8) {
+  if (!_xs1d.value || _xs1d.value.length < 8) {
     addToast('error', 'Invalid Input', t('storageIdPlaceholder'));
     return;
   }
@@ -2462,63 +2412,40 @@ const useExternalStorageId = async () => {
   
   try {
     const apiUrl = await apiConfig.getApiUrl();
+    await axios.get(`${apiUrl}/tasks`, { params: { storage_id: _xs1d.value } });
     
-    // Test if the external storage ID exists by trying to get tasks
-    await axios.get(`${apiUrl}/tasks`, {
-      params: { storage_id: externalStorageId.value }
-    });
+    _s1d.value = _xs1d.value;
+    storageManager.setStorageId(_xs1d.value);
     
-    // If we get here, the storage ID exists
-    // Update local storage ID to the external one
-    storageId.value = externalStorageId.value;
-    storageManager.setStorageId(externalStorageId.value);
-    
-    // Refresh tasks and stats
     await fetchTasks();
     await fetchTaskStats();
     
     addToast('success', t('externalIdConnected'));
     showUserDialog.value = false;
-    externalStorageId.value = '';
+    _xs1d.value = '';
     
   } catch (error) {
     console.error('Error connecting to external storage:', error);
-    if (error.response?.status === 400) {
-      addToast('error', 'Invalid Storage ID', t('invalidStorageId'));
-    } else {
-      addToast('error', 'Connection Error', t('errorConnectingToStorage'));
-    }
+    addToast('error', 'Connection Error', error.response?.status === 400 ? t('invalidStorageId') : t('errorConnectingToStorage'));
   } finally {
     isUsingExternalId.value = false;
   }
 };
 
 // --- LIFECYCLE HOOKS ---
-// Handle page visibility changes (e.g., when user switches tabs)
 const handleVisibilityChange = () => {
-  if (document.hidden && isRecording.value) {
-    // If page becomes hidden while recording, stop recording
-    console.log('Page hidden while recording, stopping...');
-    stopRecording();
-  }
+  if (document.hidden && isRecording.value) stopRecording();
 };
 
 onMounted(async () => {
-  // --- ADDED: Set the browser tab title ---
-  document.title = 'TaskFlow';
-
-  // --- SEO & Social Media Meta Tags ---
   updateMetaTags();
   
-  // Initialize storage ID
-  storageId.value = storageManager.getStorageId();
-  //console.log('Storage ID:', storageId.value);
+  _s1d.value = storageManager.getStorageId();
   
   loadTheme();
   fetchTasks();
   fetchTaskStats();
   
-  // Initialize real-time sync only if enabled
   if (syncEnabled.value) {
     await initializeRealtimeSync();
   }
@@ -2527,56 +2454,39 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  // Ensure all recording is stopped and cleaned up
-  if (isRecording.value) {
-    cleanupRecording();
-  }
-  
-  // Stop any playing audio
+  if (isRecording.value) cleanupRecording();
   if (audioPlayer.value) {
     audioPlayer.value.pause();
     audioPlayer.value.src = '';
   }
-  
-  // Clean up periodic sync
-  if (periodicSyncInterval) {
-    clearInterval(periodicSyncInterval);
-    periodicSyncInterval = null;
-  }
-  if (activeUsersPruneInterval) {
-    clearInterval(activeUsersPruneInterval);
-    activeUsersPruneInterval = null;
-  }
-  
-  // Disconnect real-time sync
+  if (periodicSyncInterval) clearInterval(periodicSyncInterval);
+  if (activeUsersPruneInterval) clearInterval(activeUsersPruneInterval);
   realtimeSync.disconnect();
-  
-  // Clean up event listeners
   document.removeEventListener('visibilitychange', handleVisibilityChange);
 });
 
-// Fetch current online connections count for the active storage
 const fetchOnlineCount = async () => {
   try {
     const apiUrl = await apiConfig.getApiUrl();
-    const res = await fetch(`${apiUrl}/storage/online-count?storage_id=${encodeURIComponent(storageId.value)}`);
+    const res = await fetch(`${apiUrl}/storage/online-count?storage_id=${encodeURIComponent(_s1d.value)}`);
     if (!res.ok) return;
     const data = await res.json();
     onlineCount.value = Number(data.count || 0);
-  } catch (e) {
-    // ignore
+  } catch (e) { /* ignore */ }
+};
+
+// Handler for online count updates
+const handleStorageOnlineCount = (data) => {
+  if (data?.storage_id === _s1d.value) {
+    onlineCount.value = Number(data.count || 0);
   }
 };
 
 // Listen to socket event that broadcasts online counts
 const setupOnlineCountListener = () => {
-  if (!realtimeSync || !realtimeSync.socket) return;
-  realtimeSync.socket.off?.('storage_online_count');
-  realtimeSync.socket.on('storage_online_count', (data) => {
-    if (data?.storage_id === storageId.value) {
-      onlineCount.value = Number(data.count || 0);
-    }
-  });
+  if (!realtimeSync) return;
+  // Use the realtime-sync callback instead of direct socket access
+  realtimeSync.setCallback('onStorageOnlineCount', handleStorageOnlineCount);
 };
 
 </script>
@@ -2680,7 +2590,7 @@ svg { width: 1.25rem; height: 1.25rem; }
 }
 
 .storage-toggle-btn:hover {
-  background-color: var(--bg-hover);
+  background-color: var(--bg-tertiary);
   border-color: var(--primary);
   transform: translateY(-1px);
   color: var(--text-primary);
@@ -2701,79 +2611,13 @@ svg { width: 1.25rem; height: 1.25rem; }
   white-space: nowrap;
 }
 
-.sync-status {
-  position: fixed; top: var(--space-4); left: var(--space-4); z-index: 10;
-}
-
-.sync-indicator {
-  display: flex; align-items: center; gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  background-color: var(--bg-secondary);
-  color: var(--text-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  font-size: 0.875rem;
-  box-shadow: 0 4px 8px var(--shadow-color);
-  flex-direction: column;
-  align-items: flex-start;
-  min-width: 200px;
-}
-
-.user-activity-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  margin-top: var(--space-2);
-  width: 100%;
-}
-
-.user-activity-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: 0.75rem;
-}
-
-.activity-dot {
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.activity-dot.editing {
-  background-color: var(--warning);
-  animation: pulse-dot 1.5s infinite;
-}
-
-.activity-dot.recording {
-  background-color: var(--danger);
-  animation: pulse-dot 1s infinite;
-}
-
-.activity-dot.idle {
-  background-color: var(--success);
-}
-
-.activity-text {
-  color: var(--text-secondary);
-  font-size: 0.75rem;
-}
-
-.sync-dot {
-  width: 0.5rem; height: 0.5rem;
-  background-color: var(--success);
-  border-radius: 50%;
-  animation: pulse-dot 2s infinite;
-}
-
-/* --- Active users footer (plain text) --- */
 .online-users-line {
-  margin-top: var(--space-1);
+  margin-top: var(--space-4);
   color: var(--text-secondary);
   font-size: 0.875rem;
   display: flex;
   align-items: center;
+  /* FIXED: Align to the right of the container */
   justify-content: flex-end;
   gap: var(--space-2);
 }
@@ -2811,18 +2655,16 @@ svg { width: 1.25rem; height: 1.25rem; }
 .header-icon-wrapper {
     display: inline-flex;
     padding: var(--space-4);
-    background-color: var(--primary); /* Use the main accent color for the background */
-    color: white;                     /* Make the icon inside pure white */
+    background-color: var(--primary);
+    color: white;
     border-radius: var(--radius-xl);
     margin-bottom: var(--space-2);
-    /* Optional: Add a subtle glow effect */
     box-shadow: 0 0 20px rgba(79, 70, 229, 0.4);
 }
 .header-icon-wrapper svg { width: 2rem; height: 2rem; }
 .app-title { font-size: 2.5rem; font-weight: 800; }
 .app-subtitle { color: var(--text-secondary); margin-top: var(--space-2); font-size: 1.1rem; }
 
-/* --- ADDED: Styles for the new header info --- */
 .header-info {
   margin-top: var(--space-4);
   color: var(--text-secondary);
@@ -2831,12 +2673,6 @@ svg { width: 1.25rem; height: 1.25rem; }
 }
 .header-info p {
   margin: 0;
-}
-.storage-info {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  font-style: italic;
-  margin-top: var(--space-1);
 }
 
 .app-main-content { display: grid; gap: var(--space-6); }
@@ -2872,7 +2708,6 @@ svg { width: 1.25rem; height: 1.25rem; }
   background-color: var(--bg-tertiary);
   border: 2px solid var(--border-color);
   border-radius: var(--radius-md);
-  /* Keep extra left padding for leading icons in non-edit fields */
   padding: var(--space-3) var(--space-4) var(--space-3) 3rem;
   color: var(--text-primary);
   font-family: inherit;
@@ -2888,7 +2723,6 @@ svg { width: 1.25rem; height: 1.25rem; }
 }
 .form-textarea { resize: vertical; min-height: 80px; }
 
-/* Spacing between inline edit inputs */
 .edit-inline { 
   display: grid; 
   gap: var(--space-2);
@@ -2899,6 +2733,18 @@ svg { width: 1.25rem; height: 1.25rem; }
   margin-bottom: var(--space-1);
   width: 100%;
   max-width: none;
+}
+.edit-warning {
+  padding: var(--space-3);
+  background-color: var(--warning-light);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-md);
+  color: var(--warning);
+  font-weight: 500;
+  font-size: 0.875rem;
+}
+[data-theme="dark"] .edit-warning {
+  color: #ffffff;
 }
 .edit-actions { 
   display: flex; 
@@ -2946,7 +2792,6 @@ svg { width: 1.25rem; height: 1.25rem; }
 .task-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--space-4); }
 .stat-card { display: flex; align-items: center; gap: var(--space-4); }
 
-/* Filter Button Styles */
 .filter-button {
   cursor: pointer;
   transition: all 0.3s ease;
@@ -2970,7 +2815,6 @@ svg { width: 1.25rem; height: 1.25rem; }
   box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.2), 0 4px 20px rgba(245, 158, 11, 0.15);
 }
 
-/* All filter shows purple outline that stays lit then fades away */
 .filter-active[data-filter="all"] {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px rgba(147, 51, 234, 0.2), 0 4px 20px rgba(147, 51, 234, 0.15);
@@ -2992,18 +2836,9 @@ svg { width: 1.25rem; height: 1.25rem; }
   }
 }
 
-/* Keep original number styling */
-.filter-button .stat-number {
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.filter-button .stat-label {
-  color: var(--text-secondary);
-}
-.stat-icon-wrapper {
-  display: flex; padding: var(--space-3); border-radius: var(--radius-lg);
-}
+.filter-button .stat-number { color: var(--text-primary); font-weight: 600; }
+.filter-button .stat-label { color: var(--text-secondary); }
+.stat-icon-wrapper { display: flex; padding: var(--space-3); border-radius: var(--radius-lg); }
 .stat-icon-wrapper.success { background-color: var(--success-light); color: var(--success); }
 .stat-icon-wrapper.warning { background-color: var(--warning-light); color: var(--warning); }
 .stat-icon-wrapper.info    { background-color: var(--info-light);    color: var(--info); }
@@ -3020,7 +2855,7 @@ svg { width: 1.25rem; height: 1.25rem; }
 }
 
 .task-header { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--space-4); }
-.task-main-info { display: flex; align-items: flex-start; gap: var(--space-4); flex-grow: 1; }
+.task-main-info { display: flex; align-items: flex-start; gap: var(--space-4); flex-grow: 1; min-width: 0; }
 .task-checkbox {
   flex-shrink: 0;
   width: 1.5rem; height: 1.5rem;
@@ -3038,6 +2873,7 @@ svg { width: 1.25rem; height: 1.25rem; }
     padding-top: 2px;
     width: 100%;
     flex: 1;
+    min-width: 0;
 }
 .task-title { font-weight: 600; font-size: 1.1rem; margin-bottom: var(--space-1); }
 .task-title-row { display: flex; align-items: center; gap: var(--space-2); }
@@ -3052,11 +2888,7 @@ svg { width: 1.25rem; height: 1.25rem; }
 }
 .task-description { color: var(--text-secondary); font-size: 0.9rem; }
 
-/* Description container and text wrapping */
-.task-description-container {
-  margin-top: var(--space-1);
-}
-
+.task-description-container { margin-top: var(--space-1); }
 .task-description {
   color: var(--text-secondary);
   font-size: 0.9rem;
@@ -3066,19 +2898,17 @@ svg { width: 1.25rem; height: 1.25rem; }
   max-width: 100%;
   box-sizing: border-box;
 }
-
 .task-description-preview {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-
 .task-description-full {
   white-space: pre-wrap;
   word-break: break-word;
 }
 .task-actions { display: flex; gap: var(--space-2); }
-.task-actions .btn { padding: var(--space-2); } /* smaller icon buttons */
+.task-actions .btn { padding: var(--space-2); }
 .task-actions .btn svg { width: 1rem; height: 1rem; }
 
 .task-meta {
@@ -3086,7 +2916,7 @@ svg { width: 1.25rem; height: 1.25rem; }
     flex-wrap: wrap;
     gap: var(--space-2) var(--space-4);
     margin-top: var(--space-4);
-    padding-left: calc(1.5rem + var(--space-4)); /* align with text */
+    padding-left: calc(1.5rem + var(--space-4));
     font-size: 0.8rem;
     color: var(--text-secondary);
 }
@@ -3098,6 +2928,13 @@ svg { width: 1.25rem; height: 1.25rem; }
 .meta-item svg {
     width: 0.875rem;
     height: 0.875rem;
+}
+
+.task-side-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-shrink: 0;
 }
 
 /* ------------------------------- */
@@ -3138,21 +2975,58 @@ svg { width: 1.25rem; height: 1.25rem; }
     border-radius: 50%;
     transition: var(--transition-fast);
 }
-.btn-record.is-recording .record-dot {
-    animation: pulse-dot 1.5s infinite;
-}
+.btn-record.is-recording .record-dot { animation: pulse-dot 1.5s infinite; }
 
 .media-lists { display: grid; gap: var(--space-4); }
 .media-list h4 { margin-bottom: var(--space-2); font-size: 1rem; }
 .media-item {
-    display: flex; justify-content: space-between; align-items: center;
+    display: flex; 
+    justify-content: space-between; 
+    align-items: center;
     background-color: var(--bg-tertiary);
     padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-md);
+    overflow: hidden;
+    width: 100%;
+    max-width: 100%;
 }
-.media-info { display: flex; align-items: center; gap: var(--space-2); font-size: 0.9rem; }
+.media-info {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: 0.9rem;
+    overflow: hidden;
+    min-width: 0;
+    flex: 1;
+    max-width: 100%;
+}
+
+.filename-text {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+    flex: 1;
+    min-width: 0;
+}
+
+.filename-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 100%;
+}
+
+.filename-extension {
+    flex-shrink: 0;
+    flex-grow: 0;
+    white-space: nowrap;
+}
 .audio-duration { font-style: italic; color: var(--text-secondary); }
-.media-actions { display: flex; gap: var(--space-2); }
+.media-actions { display: flex; gap: var(--space-2); flex-shrink: 0; }
 .media-actions .btn { padding: var(--space-2); }
 .media-actions .btn svg { width: 1rem; height: 1rem; }
 
@@ -3183,502 +3057,6 @@ svg { width: 1.25rem; height: 1.25rem; }
 /* ------------------------------- */
 /* --- USER MANAGEMENT --- */
 /* ------------------------------- */
-.user-management-btn {
-  position: fixed;
-  bottom: var(--space-4);
-  left: var(--space-4);
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  background-color: var(--bg-secondary);
-  color: var(--text-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  cursor: pointer;
-  transition: var(--transition-fast);
-  box-shadow: 0 4px 12px var(--shadow-color);
-  font-size: 0.875rem;
-  font-weight: 500;
-}
-
-.user-management-btn:hover {
-  color: var(--text-primary);
-  border-color: var(--primary);
-  transform: translateY(-2px);
-  box-shadow: 0 6px 16px var(--shadow-color);
-}
-
-.user-icon {
-  width: 1.25rem;
-  height: 1.25rem;
-}
-
-/* Sync Toggle Section */
-.sync-toggle-section {
-  margin-bottom: var(--space-6);
-  padding: var(--space-4);
-  background: var(--bg-secondary);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-color);
-}
-
-.sync-toggle-label {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  cursor: pointer;
-  font-weight: 500;
-}
-
-.sync-toggle-input {
-  width: 1.25rem;
-  height: 1.25rem;
-  accent-color: var(--primary-color);
-}
-
-.sync-toggle-text {
-  color: var(--text-primary);
-}
-
-.sync-toggle-description {
-  margin-top: var(--space-2);
-  margin-left: calc(1.25rem + var(--space-3));
-  font-size: 0.875rem;
-  color: var(--text-secondary);
-  line-height: 1.4;
-}
-
-/* Tab Navigation */
-.tab-navigation {
-  display: flex;
-  gap: var(--space-1);
-  margin-bottom: var(--space-6);
-  padding: var(--space-1);
-  background-color: var(--bg-tertiary);
-  border-radius: var(--radius-md);
-}
-
-.tab-btn {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  background-color: transparent;
-  color: var(--text-secondary);
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: var(--transition-fast);
-  font-size: 0.875rem;
-  font-weight: 500;
-}
-
-.tab-btn:hover {
-  background-color: var(--bg-primary);
-  color: var(--text-primary);
-}
-
-.tab-btn.active {
-  background-color: var(--primary);
-  color: white;
-}
-
-.tab-icon {
-  width: 1rem;
-  height: 1rem;
-}
-
-/* Tab Content */
-.tab-content {
-  min-height: 300px;
-}
-
-.tab-panel {
-  animation: fadeIn 0.3s ease-in-out;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-/* Generated ID Section */
-.generated-id-section {
-  margin-top: var(--space-6);
-  padding-top: var(--space-4);
-  border-top: 1px solid var(--border-color);
-}
-
-.generated-id-display {
-  display: grid;
-  gap: var(--space-2);
-  margin-bottom: var(--space-4);
-}
-
-.generated-id-display label {
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.generated-id-info {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  background-color: var(--success-light);
-  border: 1px solid var(--success);
-  border-radius: var(--radius-md);
-}
-
-.generated-id-info .info-icon {
-  width: 1.25rem;
-  height: 1.25rem;
-  color: var(--success);
-  flex-shrink: 0;
-  margin-top: 2px;
-}
-
-.generated-id-info p {
-  margin: 0;
-  font-size: 0.875rem;
-  color: var(--success);
-  line-height: 1.4;
-}
-
-/* Dark mode overrides for generated ID info */
-[data-theme="dark"] .generated-id-info .info-icon,
-[data-theme="dark"] .generated-id-info p {
-  color: #ffffff;
-}
-
-.copy-btn {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-6);
-  font-size: 1rem;
-}
-
-.copy-icon {
-  width: 1.25rem;
-  height: 1.25rem;
-}
-
-/* Custom Confirm Dialog */
-.confirm-dialog {
-  max-width: 400px;
-}
-
-.confirm-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-4);
-}
-
-.confirm-icon {
-  width: 1.5rem;
-  height: 1.5rem;
-  color: var(--warning);
-}
-
-.confirm-header h3 {
-  margin: 0;
-  font-size: 1.25rem;
-  font-weight: 600;
-}
-
-.confirm-body {
-  margin-bottom: var(--space-6);
-}
-
-.confirm-body p {
-  margin: 0;
-  line-height: 1.5;
-  color: var(--text-secondary);
-}
-
-.confirm-actions {
-  display: flex;
-  gap: var(--space-3);
-  justify-content: flex-end;
-}
-
-/* Toast System */
-.toast-container {
-  position: fixed;
-  bottom: var(--space-4);
-  right: var(--space-4);
-  z-index: 2000;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  max-width: 400px;
-}
-
-.toast {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  background-color: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  box-shadow: 0 8px 24px var(--shadow-color);
-  min-width: 300px;
-  backdrop-filter: blur(8px);
-  animation: toastSlideIn 0.3s ease-out;
-}
-
-@keyframes toastSlideIn {
-  from {
-    opacity: 0;
-    transform: translateX(100%);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-.toast.success {
-  border-left: 4px solid var(--success);
-  background-color: var(--success-light);
-}
-
-.toast.error {
-  border-left: 4px solid var(--danger);
-  background-color: var(--danger-light);
-}
-
-.toast.info {
-  border-left: 4px solid var(--info);
-  background-color: var(--info-light);
-}
-
-.toast.warning {
-  border-left: 4px solid var(--warning);
-  background-color: var(--warning-light);
-}
-
-.toast-content {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  flex: 1;
-}
-
-.toast-icon {
-  width: 1.25rem;
-  height: 1.25rem;
-  flex-shrink: 0;
-  margin-top: 2px;
-}
-
-.toast.success .toast-icon {
-  color: var(--success);
-}
-
-.toast.error .toast-icon {
-  color: var(--danger);
-}
-
-.toast.info .toast-icon {
-  color: var(--info);
-}
-
-.toast.warning .toast-icon {
-  color: var(--warning);
-}
-
-/* Dark mode overrides for toast notifications */
-[data-theme="dark"] .toast.success .toast-icon,
-[data-theme="dark"] .toast.success .toast-message {
-  color: #ffffff;
-}
-
-[data-theme="dark"] .toast.warning .toast-icon,
-[data-theme="dark"] .toast.warning .toast-message {
-  color: #ffffff;
-}
-
-[data-theme="dark"] .toast.info .toast-icon,
-[data-theme="dark"] .toast.info .toast-message {
-  color: #ffffff;
-}
-
-[data-theme="dark"] .toast.error .toast-icon,
-[data-theme="dark"] .toast.error .toast-message {
-  color: #ffffff;
-}
-
-/* Dark mode override for toast message text */
-[data-theme="dark"] .toast-message {
-  color: #ffffff;
-}
-
-.toast-text {
-  flex: 1;
-}
-
-.toast-title {
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: var(--space-1);
-}
-
-.toast-message {
-  font-size: 0.875rem;
-  color: #000000;
-  line-height: 1.4;
-}
-
-.toast-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.5rem;
-  height: 1.5rem;
-  background-color: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: var(--transition-fast);
-  flex-shrink: 0;
-}
-
-.toast-close:hover {
-  background-color: var(--bg-tertiary);
-  color: var(--text-primary);
-}
-
-.toast-close svg {
-  width: 1rem;
-  height: 1rem;
-}
-
-/* Toast Transitions */
-.toast-enter-active,
-.toast-leave-active {
-  transition: all 0.3s ease;
-}
-
-.toast-enter-from {
-  opacity: 0;
-  transform: translateX(100%);
-}
-
-.toast-leave-to {
-  opacity: 0;
-  transform: translateX(100%);
-}
-
-.toast-move {
-  transition: transform 0.3s ease;
-}
-
-/* External ID Dialog Styles */
-.external-id-section {
-  display: grid;
-  gap: var(--space-6);
-}
-
-.external-id-section .input-group {
-  display: grid;
-  gap: var(--space-2);
-  width: 100%;
-  max-width: none;
-}
-
-.external-id-section .input-group label {
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.input-with-icon {
-  position: relative;
-  display: flex;
-  align-items: center;
-  width: 100%;
-  max-width: none;
-}
-
-.input-with-icon .input-icon {
-  position: absolute;
-  left: var(--space-3);
-  width: 1.25rem;
-  height: 1.25rem;
-  color: var(--text-secondary);
-  z-index: 1;
-  pointer-events: none;
-}
-
-.external-id-input {
-  font-family: 'Courier New', monospace;
-  font-size: 1rem;
-  text-align: center;
-  letter-spacing: 0.1em;
-  padding-left: 3rem;
-  width: 100%;
-  max-width: none;
-}
-
-.external-id-info {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  background-color: var(--info-light);
-  border: 1px solid var(--info);
-  border-radius: var(--radius-md);
-}
-
-.info-icon {
-  width: 1.25rem;
-  height: 1.25rem;
-  color: var(--info);
-  flex-shrink: 0;
-  margin-top: 2px;
-}
-
-.external-id-info p {
-  margin: 0;
-  font-size: 0.875rem;
-  color: var(--info);
-  line-height: 1.4;
-  font-weight: 500;
-}
-
-/* Dark mode overrides for info containers */
-[data-theme="dark"] .external-id-info .info-icon,
-[data-theme="dark"] .external-id-info p {
-  color: #ffffff;
-}
-
-.external-id-actions {
-  display: flex;
-  justify-content: center;
-}
-
-.external-id-actions .btn {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-6);
-  font-size: 1rem;
-}
-
-.external-id-actions .link-icon {
-  width: 1.25rem;
-  height: 1.25rem;
-}
-
-/* Modal Styles */
 .modal-overlay {
   position: fixed;
   top: 0;
@@ -3708,14 +3086,8 @@ svg { width: 1.25rem; height: 1.25rem; }
 }
 
 @keyframes modalSlideIn {
-  from {
-    opacity: 0;
-    transform: scale(0.95) translateY(-20px);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
+  from { opacity: 0; transform: scale(0.95) translateY(-20px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 .modal-header {
@@ -3724,10 +3096,7 @@ svg { width: 1.25rem; height: 1.25rem; }
   align-items: center;
   padding: var(--space-4) var(--space-6);
   border-bottom: 1px solid var(--border-color);
-  background-color: var(--bg-secondary);
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 }
-
 .modal-header h3 {
   margin: 0;
   font-size: 1.1rem;
@@ -3737,12 +3106,7 @@ svg { width: 1.25rem; height: 1.25rem; }
   align-items: center;
   gap: var(--space-2);
 }
-
-.header-icon {
-  width: 1.25rem;
-  height: 1.25rem;
-  color: var(--text-primary);
-}
+.header-icon { width: 1.25rem; height: 1.25rem; color: var(--text-primary); }
 
 .close-btn {
   display: flex;
@@ -3757,197 +3121,118 @@ svg { width: 1.25rem; height: 1.25rem; }
   cursor: pointer;
   transition: var(--transition-fast);
 }
-
-.close-btn:hover {
-  background-color: var(--bg-tertiary);
-  color: var(--text-primary);
-}
+.close-btn:hover { background-color: var(--bg-tertiary); color: var(--text-primary); }
 
 .modal-body {
   padding: var(--space-4) var(--space-6) var(--space-6);
-  background-color: var(--bg-secondary);
   min-height: 200px;
-  width: 100%;
 }
 
-.storage-info-section {
-  display: grid;
-  gap: var(--space-4);
-}
-
-.storage-warning {
-  display: flex;
-  gap: var(--space-3);
+.sync-toggle-section {
+  margin-bottom: var(--space-6);
   padding: var(--space-4);
-  background-color: var(--warning-bg);
-  border: 1px solid var(--warning-border);
+  background: var(--bg-tertiary);
   border-radius: var(--radius-md);
-  margin-bottom: var(--space-4);
-}
-
-.storage-warning .warning-icon {
-  width: 1.5rem;
-  height: 1.5rem;
-  color: var(--warning);
-  flex-shrink: 0;
-  margin-top: 0.125rem;
-}
-
-.warning-content p {
-  margin: 0;
-  font-size: 0.9rem;
-  color: var(--warning);
-  line-height: 1.6;
-  text-align: justify;
-  flex: 1;
-  font-weight: 500;
-}
-
-/* Dark mode overrides for warning containers */
-[data-theme="dark"] .storage-warning .warning-icon,
-[data-theme="dark"] .warning-content p {
-  color: #ffffff;
-}
-
-.storage-id-display {
-  display: grid;
-  gap: var(--space-2);
-}
-
-.storage-id-display label {
-  font-weight: 500;
-  color: var(--text-primary);
-  font-size: 0.875rem;
-}
-
-.storage-id-container {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  background-color: var(--bg-tertiary);
   border: 1px solid var(--border-color);
+}
+
+.sync-toggle-label { display: flex; align-items: center; gap: var(--space-3); cursor: pointer; font-weight: 500; }
+.sync-toggle-input { width: 1.25rem; height: 1.25rem; accent-color: var(--primary); }
+.sync-toggle-text { color: var(--text-primary); }
+.sync-toggle-description { margin-top: var(--space-2); margin-left: calc(1.25rem + var(--space-3)); font-size: 0.875rem; color: var(--text-secondary); line-height: 1.4; }
+
+.tab-navigation {
+  display: flex;
+  gap: var(--space-1);
+  margin-bottom: var(--space-6);
+  padding: var(--space-1);
+  background-color: var(--bg-tertiary);
   border-radius: var(--radius-md);
-  min-height: 3rem;
 }
 
-.storage-id-text {
-  font-family: 'Courier New', monospace;
-  font-size: 0.875rem;
-  color: var(--text-primary);
-  word-break: break-all;
+.tab-btn {
   flex: 1;
-  font-weight: 500;
-}
-
-.storage-id-text.blurred {
-  filter: blur(4px);
-  user-select: none;
-}
-
-.eye-toggle-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 2rem;
-  height: 2rem;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
   background-color: transparent;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
   color: var(--text-secondary);
+  border: none;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: var(--transition-fast);
-  flex-shrink: 0;
-}
-
-.eye-toggle-btn:hover {
-  background-color: var(--bg-primary);
-  color: var(--text-primary);
-  border-color: var(--primary);
-}
-
-.security-warning {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  background-color: var(--warning-light);
-  border: 1px solid var(--warning);
-  border-radius: var(--radius-md);
-}
-
-.warning-icon {
-  width: 1.25rem;
-  height: 1.25rem;
-  color: var(--warning);
-  flex-shrink: 0;
-  margin-top: 2px;
-}
-
-.security-warning p {
-  margin: 0;
   font-size: 0.875rem;
-  color: var(--warning);
-  line-height: 1.4;
   font-weight: 500;
 }
+.tab-btn:hover { background-color: var(--bg-primary); color: var(--text-primary); }
+.tab-btn.active { background-color: var(--primary); color: white; }
+.tab-icon { width: 1rem; height: 1rem; }
 
-/* Dark mode overrides for security warning */
-[data-theme="dark"] .security-warning .warning-icon,
-[data-theme="dark"] .security-warning p {
-  color: #ffffff;
-}
+.tab-content { min-height: 300px; }
+.tab-panel { animation: fadeIn 0.3s ease-in-out; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
-.storage-actions {
-  display: flex;
-  justify-content: center;
-  margin-bottom: var(--space-2);
-}
+.storage-warning, .security-warning { display: flex; gap: var(--space-3); padding: var(--space-4); background-color: var(--warning-bg); border: 1px solid var(--warning-border); border-radius: var(--radius-md); }
+.storage-warning .warning-icon, .security-warning .warning-icon { width: 1.5rem; height: 1.5rem; color: var(--warning); flex-shrink: 0; margin-top: 0.125rem; }
+.warning-content p, .security-warning p { margin: 0; font-size: 0.9rem; color: var(--warning); line-height: 1.6; font-weight: 500; }
+[data-theme="dark"] .storage-warning .warning-icon, [data-theme="dark"] .warning-content p, [data-theme="dark"] .security-warning .warning-icon, [data-theme="dark"] .security-warning p { color: #ffffff; }
 
-.copy-btn {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-6);
-  font-size: 1rem;
-  font-weight: 500;
-  width: auto;
-  justify-content: center;
-}
+.storage-actions { display: flex; justify-content: center; margin-top: var(--space-6); margin-bottom: var(--space-2); }
+.copy-btn { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-6); font-size: 1rem; font-weight: 500; }
 
-.regenerate-btn {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-6);
-  font-size: 1rem;
-}
+.generated-id-section { margin-top: var(--space-6); padding-top: var(--space-4); border-top: 1px solid var(--border-color); }
+.generated-id-display label { font-weight: 500; color: var(--text-primary); font-size: 0.875rem; }
+.storage-id-container { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3); background-color: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-md); min-height: 3rem; }
+.storage-id-text { font-family: 'Courier New', monospace; font-size: 0.875rem; color: var(--text-primary); word-break: break-all; flex: 1; font-weight: 500; }
+.storage-id-text.blurred { filter: blur(4px); user-select: none; }
+.eye-toggle-btn { display: flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; background-color: transparent; border: 1px solid var(--border-color); border-radius: var(--radius-md); color: var(--text-secondary); cursor: pointer; transition: var(--transition-fast); flex-shrink: 0; }
+.eye-toggle-btn:hover { background-color: var(--bg-primary); color: var(--text-primary); border-color: var(--primary); }
 
-.refresh-icon {
-  width: 1.25rem;
-  height: 1.25rem;
-}
+.external-id-section .input-group { display: grid; gap: var(--space-2); }
+.external-id-section .input-group label { font-weight: 500; color: var(--text-primary); }
+.input-with-icon { position: relative; display: flex; align-items: center; }
+.input-with-icon .input-icon { position: absolute; left: var(--space-3); width: 1.25rem; height: 1.25rem; color: var(--text-secondary); z-index: 1; pointer-events: none; }
+.external-id-input { font-family: 'Courier New', monospace; font-size: 1rem; text-align: center; margin-top: (var(--space-2)); letter-spacing: 0.1em; padding-left: 3rem; }
+.external-id-info { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-4); background-color: var(--info-light); border: 1px solid var(--info); border-radius: var(--radius-md); }
+.info-icon { width: 1.25rem; height: 1.25rem; color: var(--info); flex-shrink: 0; margin-top: 2px; }
+.external-id-info p { margin: 0; font-size: 0.875rem; color: var(--info); line-height: 1.4; font-weight: 500; }
+[data-theme="dark"] .external-id-info .info-icon, [data-theme="dark"] .external-id-info p { color: #ffffff; }
+.external-id-actions { display: flex; justify-content: center; margin-top: var(--space-6); }
+.external-id-actions .btn { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-6); font-size: 1rem; }
+.link-icon { width: 1.25rem; height: 1.25rem; }
 
 /* Modal Transitions */
-.modal-enter-active,
-.modal-leave-active {
-  transition: all 0.3s ease;
-}
+.modal-enter-active, .modal-leave-active { transition: all 0.3s ease; }
+.modal-enter-from, .modal-leave-to { opacity: 0; }
+.modal-enter-from .modal-content, .modal-leave-to .modal-content { transform: scale(0.9) translateY(-20px); }
 
-.modal-enter-from,
-.modal-leave-to {
-  opacity: 0;
-}
-
-.modal-enter-from .modal-content,
-.modal-leave-to .modal-content {
-  transform: scale(0.9) translateY(-20px);
-}
-
-.modal-enter-to .modal-content,
-.modal-leave-from .modal-content {
-  transform: scale(1) translateY(0);
-}
+/* --- Toast System --- */
+.toast-container { position: fixed; bottom: var(--space-4); right: var(--space-4); z-index: 2000; display: flex; flex-direction: column; gap: var(--space-2); max-width: 400px; }
+.toast { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-4); background-color: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-lg); box-shadow: 0 8px 24px var(--shadow-color); min-width: 300px; backdrop-filter: blur(8px); animation: toastSlideIn 0.3s ease-out; }
+@keyframes toastSlideIn { from { opacity: 0; transform: translateX(100%); } to { opacity: 1; transform: translateX(0); } }
+.toast.success { border-left: 4px solid var(--success); background-color: var(--success-light); }
+.toast.error { border-left: 4px solid var(--danger); background-color: var(--danger-light); }
+.toast.info { border-left: 4px solid var(--info); background-color: var(--info-light); }
+.toast.warning { border-left: 4px solid var(--warning); background-color: var(--warning-light); }
+.toast-content { display: flex; align-items: flex-start; gap: var(--space-3); flex: 1; }
+.toast-icon { width: 1.25rem; height: 1.25rem; flex-shrink: 0; margin-top: 2px; }
+.toast.success .toast-icon { color: var(--success); }
+.toast.error .toast-icon { color: var(--danger); }
+.toast.info .toast-icon { color: var(--info); }
+.toast.warning .toast-icon { color: var(--warning); }
+[data-theme="dark"] .toast.success .toast-icon, [data-theme="dark"] .toast.success .toast-message, [data-theme="dark"] .toast.warning .toast-icon, [data-theme="dark"] .toast.warning .toast-message, [data-theme="dark"] .toast.info .toast-icon, [data-theme="dark"] .toast.info .toast-message, [data-theme="dark"] .toast.error .toast-icon, [data-theme="dark"] .toast.error .toast-message { color: #ffffff; }
+.toast-text { flex: 1; }
+.toast-title { font-weight: 600; color: var(--text-primary); margin-bottom: var(--space-1); }
+.toast-message { font-size: 0.875rem; color: #000000; line-height: 1.4; }
+[data-theme="dark"] .toast-message { color: #ffffff; }
+.toast-close { display: flex; align-items: center; justify-content: center; width: 1.5rem; height: 1.5rem; background-color: transparent; border: none; border-radius: var(--radius-sm); color: var(--text-secondary); cursor: pointer; transition: var(--transition-fast); flex-shrink: 0; }
+.toast-close:hover { background-color: var(--bg-tertiary); color: var(--text-primary); }
+.toast-close svg { width: 1rem; height: 1rem; }
+.toast-enter-active, .toast-leave-active { transition: all 0.3s ease; }
+.toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(100%); }
+.toast-move { transition: transform 0.3s ease; }
 
 /* ------------------------------- */
 /* --- RESPONSIVE DESIGN --- */
@@ -3957,54 +3242,19 @@ svg { width: 1.25rem; height: 1.25rem; }
   .task-stats-grid { grid-template-columns: 1fr; }
   .add-media-grid { grid-template-columns: 1fr; }
   .task-header { flex-direction: column; align-items: stretch; }
-  .task-actions { align-self: flex-end; }
+  .task-side-controls { align-self: flex-end; }
   .task-meta { padding-left: 0; }
   
-  .storage-toggle-btn {
-    padding: var(--space-2);
-    min-width: 2.5rem;
-    justify-content: center;
-  }
+  .storage-toggle-btn { padding: var(--space-2); min-width: 2.5rem; justify-content: center; }
+  .storage-label { display: none; }
   
-  .storage-label {
-    display: none;
-  }
+  .tab-navigation { flex-direction: column; gap: var(--space-2); }
+  .tab-btn { padding: var(--space-2) var(--space-3); font-size: 0.8rem; }
   
-  .user-management-btn {
-    bottom: var(--space-2);
-    left: var(--space-2);
-    padding: var(--space-2) var(--space-3);
-    font-size: 0.8rem;
-  }
+  .toast-container { bottom: var(--space-2); right: var(--space-2); left: var(--space-2); max-width: none; }
+  .toast { min-width: auto; }
   
-  .tab-navigation {
-    flex-direction: column;
-    gap: var(--space-2);
-  }
-  
-  .tab-btn {
-    padding: var(--space-2) var(--space-3);
-    font-size: 0.8rem;
-  }
-  
-  .toast-container {
-    bottom: var(--space-2);
-    right: var(--space-2);
-    left: var(--space-2);
-    max-width: none;
-  }
-  
-  .toast {
-    min-width: auto;
-  }
-  
-  .modal-overlay {
-    padding: var(--space-2);
-  }
-  
-  .modal-header,
-  .modal-body {
-    padding: var(--space-4);
-  }
+  .modal-overlay { padding: var(--space-2); }
+  .modal-header, .modal-body { padding: var(--space-4); }
 }
 </style>
