@@ -350,7 +350,10 @@ def create_task():
             'created_at': datetime.utcnow(),
             'updated_at': datetime.utcnow(),
             'attachments': [],
-            'audio_notes': []
+            'audio_notes': [],
+            'is_backup': data.get('is_backup', False),
+            'original_id': data.get('original_id'),
+            'backup_reason': data.get('backup_reason')
         }
         
         result = tasks_collection.insert_one(task_data)
