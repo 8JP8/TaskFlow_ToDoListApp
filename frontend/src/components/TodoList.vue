@@ -157,8 +157,11 @@
                   <div v-if="task.isEditing" class="edit-inline">
                     <input v-model="task.editTitle" type="text" class="form-input edit-title-input" :placeholder="t('title')" />
                     <textarea v-model="task.editDescription" class="form-textarea" :placeholder="t('description')"></textarea>
+                    <div v-if="task.taskDeletedWhileEditing" class="edit-warning">
+                      ⚠️ This task was deleted. Click Save to create a backup with your changes.
+                    </div>
                     <div class="edit-actions">
-                      <button @click="saveEdit(task)" class="btn btn-primary">{{ t('save') }}</button>
+                      <button @click="saveEditOrBackup(task)" class="btn btn-primary">{{ t('save') }}</button>
                       <button @click="cancelEdit(task)" class="btn btn-secondary">{{ t('cancel') }}</button>
                     </div>
                   </div>
@@ -1068,6 +1071,9 @@ const deleteTask = async (taskId) => {
   }
   
   try {
+    // Track this action to prevent self-notifications
+    lastActionTimestamp.value = Date.now();
+    
     const apiUrl = await apiConfig.getApiUrl();
     await axios.delete(`${apiUrl}/tasks/${taskId}`, {
       params: { storage_id: _s1d.value }
@@ -1091,7 +1097,18 @@ const startEdit = (task) => {
   realtimeSync.updateActivity('editing');
 };
 const cancelEdit = (task) => {
+  // If task was deleted while editing, remove it from the list
+  if (task.taskDeletedWhileEditing) {
+    const taskIndex = tasks.value.findIndex(t => t._id === task._id);
+    if (taskIndex !== -1) {
+      tasks.value.splice(taskIndex, 1);
+      fetchTaskStats();
+      addToast('info', 'Task Removed', 'The deleted task has been removed from your list.');
+    }
+  }
+  
   task.isEditing = false;
+  task.taskDeletedWhileEditing = false; // Clear the flag
   
   // Update activity status
   realtimeSync.updateActivity('idle');
@@ -1113,6 +1130,7 @@ const saveEdit = async (task) => {
     task.title = task.editTitle;
     task.description = task.editDescription;
     task.isEditing = false;
+    task.taskDeletedWhileEditing = false; // Clear the flag on successful save
     
     // Update activity status
     realtimeSync.updateActivity('idle');
@@ -1124,20 +1142,40 @@ const saveEdit = async (task) => {
   } catch (error) { 
     console.error('Error saving task edits:', error);
     
-    // If task was deleted (404 error), create backup instead
+    // If task was deleted (404 error), mark it and notify user - DON'T create backup yet
     if (error.response?.status === 404) {
-      console.log('Task was deleted while editing, creating backup...');
-      await createTaskBackup(task, 'task deleted while editing');
-      // Remove the original task from the list after backup creation
-      const taskIndex = tasks.value.findIndex(t => t._id === task._id);
-      if (taskIndex !== -1) {
-        tasks.value.splice(taskIndex, 1);
-      }
-      task.isEditing = false;
-      addToast('info', 'Task Deleted', 'Your changes were saved as a backup because the task was deleted.');
+      console.log('Task was deleted while editing. User must click Save again to create backup.');
+      
+      // Mark task as deleted while editing
+      task.taskDeletedWhileEditing = true;
+      
+      addToast('warning', 'Task Deleted', 'This task was deleted by another user. Click Save again to create a backup with your changes.');
     } else {
       addToast('error', t('networkError2'), t('networkError2'));
     }
+  }
+};
+
+const saveEditOrBackup = async (task) => {
+  // If task was deleted while editing, create backup instead of updating
+  if (task.taskDeletedWhileEditing) {
+    console.log('Creating backup with user edits after confirmation...');
+    
+    await createTaskBackup(task, 'task deleted while editing');
+    
+    // Remove the task from the list
+    const taskIndex = tasks.value.findIndex(t => t._id === task._id);
+    if (taskIndex !== -1) {
+      tasks.value.splice(taskIndex, 1);
+    }
+    
+    task.isEditing = false;
+    task.taskDeletedWhileEditing = false;
+    
+    addToast('success', 'Backup Created', 'Your changes were saved as a backup.');
+  } else {
+    // Normal save
+    await saveEdit(task);
   }
 };
 
@@ -1222,6 +1260,9 @@ const toIdString = (val) => {
 const deleteAttachment = async (taskId, attachmentId) => {
   if (!confirm(t('confirmDeleteAttachment'))) return;
   try {
+    // Track this action to prevent self-notifications
+    lastActionTimestamp.value = Date.now();
+    
     const apiUrl = await apiConfig.getApiUrl();
     const idStr = toIdString(attachmentId);
     await axios.delete(`${apiUrl}/tasks/${taskId}/attachments/${idStr}`, {
@@ -1556,6 +1597,9 @@ const playAudio = async (audioInfo) => {
 const deleteAudio = async (taskId, audioId) => {
   if (!confirm(t('confirmDeleteAudio'))) return;
   try {
+    // Track this action to prevent self-notifications
+    lastActionTimestamp.value = Date.now();
+    
     const apiUrl = await apiConfig.getApiUrl();
     const idStr = toIdString(audioId);
     await axios.delete(`${apiUrl}/tasks/${taskId}/audio/${idStr}`, {
@@ -1661,6 +1705,7 @@ const initializeRealtimeSync = async () => {
   realtimeSync.setCallback('onTaskCreated', handleRemoteTaskCreated);
   realtimeSync.setCallback('onTaskUpdated', handleRemoteTaskUpdated);
   realtimeSync.setCallback('onTaskDeleted', handleRemoteTaskDeleted);
+  realtimeSync.setCallback('onTaskRestored', handleRemoteTaskRestored);
   realtimeSync.setCallback('onUserActivity', handleUserActivity);
   realtimeSync.setCallback('onConnectionChange', handleConnectionChange);
   
@@ -1737,9 +1782,9 @@ const handleRemoteTaskCreated = (task) => {
     return;
   }
   
-  // Check if this is a recent local creation (within last 2 seconds) to prevent self-duplication
+  // Check if this is a recent local creation (within last 5 seconds) to prevent self-duplication
   const now = Date.now();
-  const isRecentLocalCreation = (now - lastActionTimestamp.value) < 2000;
+  const isRecentLocalCreation = (now - lastActionTimestamp.value) < 5000;
   
   if (isRecentLocalCreation) {
     console.log('Ignoring recent local task creation to prevent duplication');
@@ -1785,9 +1830,9 @@ const handleRemoteTaskUpdated = async (data) => {
 
   console.log('DEBUG: Remote task updated:', data);
   
-  // Check if this update was made by the current user (within last 2 seconds)
+  // Check if this update was made by the current user (within last 5 seconds)
   const now = Date.now();
-  const isOwnUpdate = (now - lastActionTimestamp.value) < 2000;
+  const isOwnUpdate = (now - lastActionTimestamp.value) < 5000;
   
   if (isOwnUpdate) {
     console.log('Ignoring own update to prevent self-notification');
@@ -1840,6 +1885,15 @@ const handleRemoteTaskDeleted = async (taskId) => {
   
   console.log('Remote task deleted:', taskId);
   
+  // Check if this deletion was made by the current user (within last 5 seconds)
+  const now = Date.now();
+  const isOwnDeletion = (now - lastActionTimestamp.value) < 5000;
+  
+  if (isOwnDeletion) {
+    console.log('Ignoring own deletion to prevent self-notification');
+    return;
+  }
+  
   const taskIndex = tasks.value.findIndex(t => t._id === taskId);
   if (taskIndex === -1) {
     console.log('Task not found for deletion:', taskId);
@@ -1861,23 +1915,52 @@ const handleRemoteTaskDeleted = async (taskId) => {
   
   // Don't delete if user is currently editing this task
   if (task.isEditing) {
-    // Check if there are unsaved changes
-    const hasUnsavedChanges = task.editTitle !== task.title || task.editDescription !== task.description;
+    // Mark that the task was deleted, don't auto-create backup
+    task.taskDeletedWhileEditing = true;
+    addToast('warning', 'Task Deleted by Another User', 'This task was deleted. Click Save to backup your changes or Cancel to discard.');
+    return;
+  }
+  
+  // Remove the task
+  tasks.value.splice(taskIndex, 1);
+  addToast('info', t('taskDeleted'), t('syncedFromAnotherDevice'));
+  
+  fetchTaskStats();
+};
+
+const handleRemoteTaskRestored = (data) => {
+  if (!syncEnabled.value) return;
+  
+  console.log('Remote task restored:', data);
+  
+  // Check if this restoration was made by the current user (within last 5 seconds)
+  const now = Date.now();
+  const isOwnRestoration = (now - lastActionTimestamp.value) < 5000;
+  
+  if (isOwnRestoration) {
+    console.log('Ignoring own restoration to prevent self-notification');
+    return;
+  }
+  
+  const task = data.task;
+  const taskIndex = tasks.value.findIndex(t => t._id === task._id);
+  
+  if (taskIndex !== -1) {
+    // Update the existing backup task to make it a normal task
+    const updatedTask = {
+      ...tasks.value[taskIndex],
+      ...task,
+      is_backup: false,
+      original_id: undefined,
+      backup_reason: undefined,
+      showDetails: tasks.value[taskIndex].showDetails,
+      isEditing: false,
+      editTitle: task.title,
+      editDescription: task.description || ''
+    };
+    tasks.value.splice(taskIndex, 1, updatedTask);
     
-    if (hasUnsavedChanges) {
-      // Create backup and then remove from list
-      await createTaskBackup(task, 'task deleted while editing');
-      tasks.value.splice(taskIndex, 1);
-      addToast('info', t('taskDeleted'), 'Your unsaved changes were backed up.');
-    } else {
-      // No unsaved changes, just remove it
-      tasks.value.splice(taskIndex, 1);
-      addToast('info', t('taskDeleted'), t('syncedFromAnotherDevice'));
-    }
-  } else {
-    // Remove the task
-    tasks.value.splice(taskIndex, 1);
-    addToast('info', t('taskDeleted'), t('syncedFromAnotherDevice'));
+    addToast('success', 'Task Restored', 'A backup was restored by another user.');
   }
   
   fetchTaskStats();
@@ -2123,28 +2206,32 @@ const restoreFromBackup = async (backupTask) => {
     lastActionTimestamp.value = Date.now();
 
     const apiUrl = await apiConfig.getApiUrl();
-    // FIXED: The title is already correct, no need to replace 'backup'
-    const response = await axios.post(`${apiUrl}/tasks`, {
-      title: backupTask.title,
-      description: backupTask.description,
-      completed: backupTask.completed,
-      storage_id: _s1d.value,
-      attachments: backupTask.attachments || [],
-      audio_notes: backupTask.audio_notes || []
+    
+    // Use the dedicated restore endpoint that updates in-place
+    const response = await axios.post(`${apiUrl}/tasks/${backupTask._id}/restore`, {
+      storage_id: _s1d.value
     });
     
-    const restoredTask = { ...response.data, showDetails: false, isEditing: false, editTitle: response.data.title, editDescription: response.data.description || '' };
-    tasks.value.unshift(restoredTask);
-    
-    // Now delete the backup task
-    await axios.delete(`${apiUrl}/tasks/${backupTask._id}`, { params: { storage_id: _s1d.value } });
-    const backupIndex = tasks.value.findIndex(t => t._id === backupTask._id);
-    if (backupIndex !== -1) {
-      tasks.value.splice(backupIndex, 1);
+    if (response.data.success) {
+      // The server already emitted task_restored event to all other clients
+      // Update local state immediately for the user who clicked restore
+      const restoredTask = { 
+        ...response.data.restored_task, 
+        showDetails: backupTask.showDetails || false, 
+        isEditing: false, 
+        editTitle: response.data.restored_task.title, 
+        editDescription: response.data.restored_task.description || '' 
+      };
+      
+      // Replace backup task with restored task (same ID, just updated)
+      const backupIndex = tasks.value.findIndex(t => t._id === backupTask._id);
+      if (backupIndex !== -1) {
+        tasks.value.splice(backupIndex, 1, restoredTask);
+      }
+      
+      fetchTaskStats();
+      addToast('success', t('taskRestored'), t('taskRestoredFromBackup'));
     }
-    
-    fetchTaskStats();
-    addToast('success', t('taskRestored'), t('taskRestoredFromBackup'));
   } catch (error) {
     console.error('Error restoring task:', error);
     addToast('error', t('restoreError'), t('networkError2'));
@@ -2646,6 +2733,18 @@ svg { width: 1.25rem; height: 1.25rem; }
   margin-bottom: var(--space-1);
   width: 100%;
   max-width: none;
+}
+.edit-warning {
+  padding: var(--space-3);
+  background-color: var(--warning-light);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-md);
+  color: var(--warning);
+  font-weight: 500;
+  font-size: 0.875rem;
+}
+[data-theme="dark"] .edit-warning {
+  color: #ffffff;
 }
 .edit-actions { 
   display: flex; 
